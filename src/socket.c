@@ -93,7 +93,11 @@ static connection *connCreateSocket(void) {
  * is not in an error state (which is not possible for a socket connection,
  * but could but possible with other protocols).
  */
+#ifdef WIN32
+static connection *connCreateAcceptedSocket(SOCKET fd, void *priv) {
+#else
 static connection *connCreateAcceptedSocket(int fd, void *priv) {
+#endif
     UNUSED(priv);
     connection *conn = connCreateSocket();
     conn->fd = fd;
@@ -131,7 +135,11 @@ static int connSocketConnect(connection *conn,
 static void connSocketShutdown(connection *conn) {
     if (conn->fd == -1) return;
 
+#ifdef _WIN32
+    shutdown(conn->fd, SD_BOTH);
+#else
     shutdown(conn->fd, SHUT_RDWR);
+#endif
 }
 
 /* Close the connection and free resources. */

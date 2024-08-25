@@ -33,6 +33,7 @@
 #include "fmacros.h"
 #include "config.h"
 #include "solarisfixes.h"
+#include "mingwfixes.h"
 #include "rio.h"
 #include "commands.h"
 
@@ -47,9 +48,11 @@
 #include <errno.h>
 #include <inttypes.h>
 #include <pthread.h>
+#ifndef _WIN32
 #include <syslog.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#endif
 #include <lua.h>
 #include <signal.h>
 
@@ -1912,7 +1915,11 @@ struct valkeyServer {
     int aof_flush_sleep;                /* Micros to sleep before flush. (used by tests) */
     int aof_rewrite_scheduled;          /* Rewrite once BGSAVE terminates. */
     sds aof_buf;                        /* AOF buffer, written before entering the event loop */
+#ifdef _WIN32
+    HANDLE aof_fd;
+#else
     int aof_fd;                         /* File descriptor of currently selected AOF file */
+#endif
     int aof_selected_db;                /* Currently selected DB in AOF */
     mstime_t aof_flush_postponed_start; /* mstime of postponed AOF flush */
     mstime_t aof_last_fsync;            /* mstime of last fsync() */
@@ -2052,7 +2059,11 @@ struct valkeyServer {
     off_t repl_transfer_last_fsync_off; /* Offset when we fsync-ed last time. */
     connection *repl_transfer_s;        /* Replica -> Primary SYNC connection */
     connection *repl_rdb_transfer_s;    /* Primary FULL SYNC connection (RDB download) */
+#ifdef _WIN32
+    HANDLE repl_transfer_fd;               /* Replica -> Primary SYNC temp file descriptor */
+#else
     int repl_transfer_fd;               /* Replica -> Primary SYNC temp file descriptor */
+#endif
     char *repl_transfer_tmpfile;        /* Replica-> Primary SYNC temp file name */
     time_t repl_transfer_lastio;        /* Unix time of the latest read, for timeout */
     int repl_serve_stale_data;          /* Serve stale data when link is down? */
@@ -2166,7 +2177,11 @@ struct valkeyServer {
                                                               VALKEYMODULE_CLUSTER_FLAG_*. */
     int cluster_allow_reads_when_down;                     /* Are reads allowed when the cluster
                                                             is down? */
+#ifdef _WIN32
+    HANDLE cluster_config_file_lock_fd;                       /* cluster config fd, will be flocked. */
+#else
     int cluster_config_file_lock_fd;                       /* cluster config fd, will be flocked. */
+#endif
     unsigned long long cluster_link_msg_queue_limit_bytes; /* Memory usage limit on individual link msg queue */
     int cluster_drop_packet_filter;                        /* Debug config that allows tactically
                                                             * dropping packets of a specific type */

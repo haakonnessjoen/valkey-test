@@ -37,9 +37,15 @@ void bioInit(void);
 unsigned long bioPendingJobsOfType(int type);
 void bioDrainWorker(int job_type);
 void bioKillThreads(void);
+#ifdef _WIN32
+void bioCreateCloseJob(HANDLE fd, int need_fsync, int need_reclaim_cache);
+void bioCreateCloseAofJob(HANDLE fd, long long offset, int need_reclaim_cache);
+void bioCreateFsyncJob(HANDLE fd, long long offset, int need_reclaim_cache);
+#else
 void bioCreateCloseJob(int fd, int need_fsync, int need_reclaim_cache);
 void bioCreateCloseAofJob(int fd, long long offset, int need_reclaim_cache);
 void bioCreateFsyncJob(int fd, long long offset, int need_reclaim_cache);
+#endif
 void bioCreateLazyFreeJob(lazy_free_fn free_fn, int arg_count, ...);
 
 /* Background job opcodes */

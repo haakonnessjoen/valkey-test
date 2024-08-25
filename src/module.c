@@ -62,9 +62,11 @@
 #include "crc16_slottable.h"
 #include "valkeymodule.h"
 #include "io_threads.h"
+#ifndef _WIN32
 #include <dlfcn.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#endif
 #include <fcntl.h>
 #include <string.h>
 
@@ -11197,14 +11199,19 @@ int TerminateModuleForkChild(int child_pid, int wait) {
 
     int statloc;
     serverLog(LL_VERBOSE, "Killing running module fork child: %ld", (long)server.child_pid);
+#ifndef _WIN32
     if (kill(server.child_pid, SIGUSR1) != -1 && wait) {
         while (waitpid(server.child_pid, &statloc, 0) != server.child_pid);
     }
+
     /* Reset the buffer accumulating changes while the child saves. */
     resetChildState();
     moduleForkInfo.done_handler = NULL;
     moduleForkInfo.done_handler_user_data = NULL;
     return C_OK;
+#else
+    serverLog(LL_WARNING, "WIN32: Cannot kill module child, not implemented.");
+#endif
 }
 
 /* Can be used to kill the forked child process from the parent process.
@@ -12160,6 +12167,7 @@ int moduleLoad(const char *path, void **module_argv, int module_argc, int is_loa
     int (*onload)(void *, void **, int);
     void *handle;
 
+#ifndef _WIN32
     struct stat st;
     if (stat(path, &st) == 0) {
         /* This check is best effort */
@@ -12253,12 +12261,17 @@ int moduleLoad(const char *path, void **module_argv, int module_argc, int is_loa
 
     moduleFreeContext(&ctx);
     return C_OK;
+#else
+    serverLogRaw(LL_WARNING, "WIN32: Module support not implemented.");
+    return C_ERR;
+#endif
 }
 
 /* Unload the module registered with the specified name. On success
  * C_OK is returned, otherwise C_ERR is returned and errmsg is set
  * with an appropriate message. */
 int moduleUnload(sds name, const char **errmsg) {
+#ifndef _WIN32
     struct ValkeyModule *module = dictFetchValue(modules, name);
 
     if (module == NULL) {
@@ -12329,6 +12342,11 @@ int moduleUnload(sds name, const char **errmsg) {
     /* Recompute command bits for all users once the modules has been completely unloaded. */
     ACLRecomputeCommandBitsFromCommandRulesAllUsers();
     return C_OK;
+#else
+    serverLog(LL_WARNING, "WIN32: Module support not implemented.");
+    errno = ECANCELED;
+    return C_ERR;
+#endif
 }
 
 void modulePipeReadable(aeEventLoop *el, int fd, void *privdata, int mask) {

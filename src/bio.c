@@ -95,7 +95,11 @@ typedef union bio_job {
     /* Job specific arguments.*/
     struct {
         int type;
+#ifdef _WIN32
+        HANDLE fd;
+#else
         int fd;                          /* Fd for file based background jobs */
+#endif
         long long offset;                /* A job-specific offset, if applicable */
         unsigned need_fsync : 1;         /* A flag to indicate that a fsync is required before
                                           * the file is closed. */
@@ -175,7 +179,11 @@ void bioCreateLazyFreeJob(lazy_free_fn free_fn, int arg_count, ...) {
     bioSubmitJob(BIO_LAZY_FREE, job);
 }
 
+#ifdef _WIN32
+void bioCreateCloseJob(HANDLE fd, int need_fsync, int need_reclaim_cache) {
+#else
 void bioCreateCloseJob(int fd, int need_fsync, int need_reclaim_cache) {
+#endif
     bio_job *job = zmalloc(sizeof(*job));
     job->fd_args.fd = fd;
     job->fd_args.need_fsync = need_fsync;
@@ -184,7 +192,11 @@ void bioCreateCloseJob(int fd, int need_fsync, int need_reclaim_cache) {
     bioSubmitJob(BIO_CLOSE_FILE, job);
 }
 
+#ifdef _WIN32
+void bioCreateCloseAofJob(HANDLE fd, long long offset, int need_reclaim_cache) {
+#else
 void bioCreateCloseAofJob(int fd, long long offset, int need_reclaim_cache) {
+#endif
     bio_job *job = zmalloc(sizeof(*job));
     job->fd_args.fd = fd;
     job->fd_args.offset = offset;
@@ -194,7 +206,11 @@ void bioCreateCloseAofJob(int fd, long long offset, int need_reclaim_cache) {
     bioSubmitJob(BIO_CLOSE_AOF, job);
 }
 
+#ifdef _WIN32
+void bioCreateFsyncJob(HANDLE fd, long long offset, int need_reclaim_cache) {
+#else
 void bioCreateFsyncJob(int fd, long long offset, int need_reclaim_cache) {
+#endif
     bio_job *job = zmalloc(sizeof(*job));
     job->fd_args.fd = fd;
     job->fd_args.offset = offset;
@@ -206,7 +222,9 @@ void bioCreateFsyncJob(int fd, long long offset, int need_reclaim_cache) {
 void *bioProcessBackgroundJobs(void *arg) {
     bio_job *job;
     unsigned long worker = (unsigned long)arg;
+#ifndef _WIN32
     sigset_t sigset;
+#endif
 
     /* Check that the worker is within the right interval. */
     serverAssert(worker < BIO_WORKER_NUM);
@@ -220,10 +238,12 @@ void *bioProcessBackgroundJobs(void *arg) {
     pthread_mutex_lock(&bio_mutex[worker]);
     /* Block SIGALRM so we are sure that only the main thread will
      * receive the watchdog signal. */
+#ifndef _WIN32
     sigemptyset(&sigset);
     sigaddset(&sigset, SIGALRM);
     if (pthread_sigmask(SIG_BLOCK, &sigset, NULL))
         serverLog(LL_WARNING, "Warning: can't mask SIGALRM in bio.c thread: %s", strerror(errno));
+#endif
 
     while (1) {
         listNode *ln;
@@ -252,7 +272,11 @@ void *bioProcessBackgroundJobs(void *arg) {
                     serverLog(LL_NOTICE, "Unable to reclaim page cache: %s", strerror(errno));
                 }
             }
+#ifdef _WIN32
+            CloseHandle(job->fd_args.fd);
+#else
             close(job->fd_args.fd);
+#endif
         } else if (job_type == BIO_AOF_FSYNC || job_type == BIO_CLOSE_AOF) {
             /* The fd may be closed by main thread and reused for another
              * socket, pipe, or file. We just ignore these errno because
@@ -275,7 +299,11 @@ void *bioProcessBackgroundJobs(void *arg) {
                     serverLog(LL_NOTICE, "Unable to reclaim page cache: %s", strerror(errno));
                 }
             }
+#ifdef _WIN32
+            if (job_type == BIO_CLOSE_AOF) CloseHandle(job->fd_args.fd);
+#else
             if (job_type == BIO_CLOSE_AOF) close(job->fd_args.fd);
+#endif
         } else if (job_type == BIO_LAZY_FREE) {
             job->free_args.free_fn(job->free_args.free_args);
         } else {

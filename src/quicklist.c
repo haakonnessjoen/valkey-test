@@ -31,6 +31,9 @@
 #include <stdio.h>
 #include <string.h> /* for memcpy */
 #include <limits.h>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 #include "quicklist.h"
 #include "zmalloc.h"
 #include "config.h"

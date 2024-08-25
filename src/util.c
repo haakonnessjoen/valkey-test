@@ -30,6 +30,11 @@
 
 #include "fmacros.h"
 #include "fpconv_dtoa.h"
+#ifdef _WIN32
+#define WORD MYVOID
+#include <windows.h>
+#undef WORD
+#endif
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -1059,7 +1064,11 @@ int dirExists(char *dname) {
 }
 
 int dirCreateIfMissing(char *dname) {
+#ifdef _WIN32
+    if (mkdir(dname) != 0) {
+#else
     if (mkdir(dname, 0755) != 0) {
+#endif
         if (errno != EEXIST) {
             return -1;
         } else if (!dirExists(dname)) {
@@ -1070,6 +1079,56 @@ int dirCreateIfMissing(char *dname) {
     return 0;
 }
 
+#ifdef _WIN32
+int dirRemove(char *dname) {
+    WIN32_FIND_DATA findFileData;
+    HANDLE hFind;
+    char path[MAX_PATH];
+    
+    snprintf(path, sizeof(path), "%s\\*", dname);
+    
+    hFind = FindFirstFile(path, &findFileData);
+    if (hFind == INVALID_HANDLE_VALUE) {
+        return -1;
+    }
+
+    do {
+        if (strcmp(findFileData.cFileName, ".") == 0 || strcmp(findFileData.cFileName, "..") == 0) {
+            continue;
+        }
+        
+        snprintf(path, sizeof(path), "%s\\%s", dname, findFileData.cFileName);
+        
+        if (findFileData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            if (dirRemove(path) != 0) {
+                FindClose(hFind);
+                return -1;
+            }
+        } else {
+            if (DeleteFile(path) == 0) {
+                FindClose(hFind);
+                return -1;
+            }
+        }
+    } while (FindNextFile(hFind, &findFileData) != 0);
+
+    // Check for errors from FindNextFile
+    if (GetLastError() != ERROR_NO_MORE_FILES) {
+        FindClose(hFind);
+        return -1;
+    }
+
+    // Close the search handle
+    FindClose(hFind);
+
+    // Finally, remove the now-empty directory
+    if (RemoveDirectory(dname) == 0) {
+        return -1;
+    }
+
+    return 0;
+}
+#else
 int dirRemove(char *dname) {
     DIR *dir;
     struct stat stat_entry;
@@ -1120,6 +1179,7 @@ int dirRemove(char *dname) {
     closedir(dir);
     return 0;
 }
+#endif
 
 sds makePath(char *path, char *filename) {
     return sdscatfmt(sdsempty(), "%s/%s", path, filename);
@@ -1134,6 +1194,9 @@ sds makePath(char *path, char *filename) {
  * 4. rename the temp file to the appropriate name
  * 5. fsync() the containing directory */
 int fsyncFileDir(const char *filename) {
+#ifdef _WIN32
+    return 0;
+#else
 #ifdef _AIX
     /* AIX is unable to fsync a directory */
     return 0;
@@ -1171,9 +1234,18 @@ int fsyncFileDir(const char *filename) {
 
     close(dir_fd);
     return 0;
+#endif
 }
 
 /* free OS pages backed by file */
+#ifdef _WIN32
+int reclaimFilePageCache(HANDLE fd, size_t offset, size_t length) {
+    UNUSED(fd);
+    UNUSED(offset);
+    UNUSED(length);
+    return 0;
+}
+#else
 int reclaimFilePageCache(int fd, size_t offset, size_t length) {
 #ifdef HAVE_FADVISE
     int ret = posix_fadvise(fd, offset, length, POSIX_FADV_DONTNEED);
@@ -1189,6 +1261,7 @@ int reclaimFilePageCache(int fd, size_t offset, size_t length) {
     return 0;
 #endif
 }
+#endif
 
 /** An async signal safe version of fgets().
  * Has the same behaviour as standard fgets(): reads a line from fd and stores it into the dest buffer.
@@ -1198,6 +1271,22 @@ int reclaimFilePageCache(int fd, size_t offset, size_t length) {
  * On success, the function returns the same dest parameter. If the End-of-File is encountered and no characters have
  * been read, the contents of dest remain unchanged and a null pointer is returned.
  * If an error occurs, a null pointer is returned. */
+#ifdef _WIN32
+char *fgets_async_signal_safe(char *dest, int buff_size, HANDLE fd) {
+    DWORD bytesRead;
+    for (int i = 0; i < buff_size; i++) {
+        /* Read one byte */
+        if (!ReadFile(fd, dest + i, 1, &bytesRead, NULL) || bytesRead == 0) {
+            return NULL; // On EOF or error, return NULL
+        }
+        /* We found the end of the line. */
+        if (dest[i] == '\n') {
+            break;
+        }
+    }
+    return dest;
+}
+#else
 char *fgets_async_signal_safe(char *dest, int buff_size, int fd) {
     for (int i = 0; i < buff_size; i++) {
         /* Read one byte */
@@ -1213,6 +1302,7 @@ char *fgets_async_signal_safe(char *dest, int buff_size, int fd) {
     }
     return dest;
 }
+#endif
 
 static const char HEX[] = "0123456789abcdef";
 

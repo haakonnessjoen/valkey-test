@@ -27,16 +27,17 @@
  * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  * POSSIBILITY OF SUCH DAMAGE.
  */
-
 #include "server.h"
 #include "cluster.h"
 #include "connection.h"
 #include "bio.h"
 
 #include <fcntl.h>
+#ifndef _WIN32
 #include <sys/stat.h>
 #include <arpa/inet.h>
 #include <glob.h>
+#endif
 #include <string.h>
 #include <locale.h>
 #include <ctype.h>
@@ -240,7 +241,7 @@ struct standardConfig {
     const char *name;        /* The user visible name of this config */
     const char *alias;       /* An alias that can also be used for this config */
     unsigned int flags;      /* Flags for this specific config */
-    typeInterface interface; /* The function pointers that define the type interface */
+    struct typeInterface interface; /* The function pointers that define the type interface */
     typeData data;           /* The type specific data exposed used by the interface */
     configType type;         /* The type of config this is. */
     void *privdata;          /* privdata for this config, for module configs this is a ModuleConfig struct */
@@ -621,7 +622,9 @@ void loadServerConfig(char *filename, char config_from_stdin, char *options) {
     sds config = sdsempty();
     char buf[CONFIG_READ_LEN + 1];
     FILE *fp;
+#ifndef _WIN32
     glob_t globbuf;
+#endif
 
     /* Load the file content */
     if (filename) {
@@ -638,7 +641,7 @@ void loadServerConfig(char *filename, char config_from_stdin, char *options) {
          *                       pattern, then gracefully continue on to the next entry in the
          *                       config file, as if the current entry was never encountered.
          *                       This will allow for empty conf.d directories to be included. */
-
+#ifndef _WIN32
         if (strchr(filename, '*') || strchr(filename, '?') || strchr(filename, '[')) {
             /* A wildcard character detected in filename, so let us use glob */
             if (glob(filename, 0, NULL, &globbuf) == 0) {
@@ -655,6 +658,7 @@ void loadServerConfig(char *filename, char config_from_stdin, char *options) {
                 globfree(&globbuf);
             }
         } else {
+#endif
             /* No wildcard in filename means we can use the original logic to read and
              * potentially fail traditionally */
             if ((fp = fopen(filename, "r")) == NULL) {
@@ -663,7 +667,9 @@ void loadServerConfig(char *filename, char config_from_stdin, char *options) {
             }
             while (fgets(buf, CONFIG_READ_LEN + 1, fp) != NULL) config = sdscat(config, buf);
             fclose(fp);
+#ifndef _WIN32
         }
+#endif
     }
 
     /* Append content from stdin */
@@ -1071,6 +1077,11 @@ void rewriteConfigMarkAsProcessed(struct rewriteConfigState *state, const char *
  * If it is impossible to read the old file, NULL is returned.
  * If the old file does not exist at all, an empty state is returned. */
 struct rewriteConfigState *rewriteConfigReadOldFile(char *path) {
+#ifdef _WIN32
+    serverLog(LL_WARNING, "WIN32: rewriteConfigState: Not implemented");
+    return NULL;
+#else
+    
     FILE *fp = fopen(path, "r");
     if (fp == NULL && errno != ENOENT) return NULL;
 
@@ -1170,6 +1181,7 @@ struct rewriteConfigState *rewriteConfigReadOldFile(char *path) {
     sdsfreesplitres(lines, totlines);
     sdsfree(config);
     return state;
+#endif
 }
 
 /* Rewrite the specified configuration option with the new "line".
@@ -1679,14 +1691,20 @@ int rewriteConfigOverwriteFile(char *configfile, sds content) {
         offset += written_bytes;
     }
 
+#ifndef _WIN32
     if (fsync(fd))
         serverLog(LL_WARNING, "Could not sync tmp config file to disk (%s)", strerror(errno));
     else if (fchmod(fd, 0644 & ~server.umask) == -1)
         serverLog(LL_WARNING, "Could not chmod config file (%s)", strerror(errno));
     else if (rename(tmp_conffile, configfile) == -1)
+#else
+    if (rename(tmp_conffile, configfile) == -1)
+#endif
         serverLog(LL_WARNING, "Could not rename tmp config file (%s)", strerror(errno));
+#ifndef _WIN32
     else if (fsyncFileDir(configfile) == -1)
         serverLog(LL_WARNING, "Could not sync config file dir (%s)", strerror(errno));
+#endif
     else {
         retval = 0;
         serverLog(LL_DEBUG, "Rewritten config file (%s) successfully", configfile);

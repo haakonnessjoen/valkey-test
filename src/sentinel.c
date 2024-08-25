@@ -37,9 +37,11 @@
 #include "async.h"
 
 #include <ctype.h>
+#ifndef _WIN32
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
+#endif
 #include <fcntl.h>
 
 extern char **environ;
@@ -795,6 +797,9 @@ listNode *sentinelGetScriptListNodeByPid(pid_t pid) {
 /* Run pending scripts if we are not already at max number of running
  * scripts. */
 void sentinelRunPendingScripts(void) {
+#ifdef _WIN32
+    return;
+#else
     listNode *ln;
     listIter li;
     mstime_t now = mstime();
@@ -836,6 +841,7 @@ void sentinelRunPendingScripts(void) {
             sentinelEvent(LL_DEBUG, "+script-child", NULL, "%ld", (long)pid);
         }
     }
+#endif
 }
 
 /* How much to delay the execution of a script that we need to retry after
@@ -857,6 +863,7 @@ mstime_t sentinelScriptRetryDelay(int retry_num) {
  * a signal, or returned exit code "1", it is scheduled to run again if
  * the max number of retries did not already elapsed. */
 void sentinelCollectTerminatedScripts(void) {
+#ifndef _WIN32
     int statloc;
     pid_t pid;
 
@@ -895,11 +902,13 @@ void sentinelCollectTerminatedScripts(void) {
         }
         sentinel.running_scripts--;
     }
+#endif
 }
 
 /* Kill scripts in timeout, they'll be collected by the
  * sentinelCollectTerminatedScripts() function. */
 void sentinelKillTimedoutScripts(void) {
+#ifndef _WIN32
     listNode *ln;
     listIter li;
     mstime_t now = mstime();
@@ -913,6 +922,7 @@ void sentinelKillTimedoutScripts(void) {
             kill(sj->pid, SIGKILL);
         }
     }
+#endif
 }
 
 /* Implements SENTINEL PENDING-SCRIPTS command. */
@@ -4718,6 +4728,7 @@ void sentinelStartFailover(sentinelValkeyInstance *primary) {
  *
  * Return non-zero if a failover was started. */
 int sentinelStartFailoverIfNeeded(sentinelValkeyInstance *primary) {
+#ifndef _WIN32
     /* We can't failover if the primary is not in O_DOWN state. */
     if (!(primary->flags & SRI_O_DOWN)) return 0;
 
@@ -4740,6 +4751,7 @@ int sentinelStartFailoverIfNeeded(sentinelValkeyInstance *primary) {
 
     sentinelStartFailover(primary);
     return 1;
+#endif
 }
 
 /* Select a suitable replica to promote. The current algorithm only uses

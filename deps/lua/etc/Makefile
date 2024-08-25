@@ -14,6 +14,8 @@ MYLDFLAGS= -Wl,-E
 MYLIBS= -lm
 #MYLIBS= -lm -Wl,-E -ldl -lreadline -lhistory -lncurses
 RM= rm -f
+AR=/opt/homebrew/bin/x86_64-w64-mingw32-ar
+RANLIB=/opt/homebrew/bin/x86_64-w64-mingw32-ranlib
 
 default:
 	@echo 'Please choose a target: min noparser one strict clean'

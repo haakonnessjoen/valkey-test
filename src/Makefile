@@ -12,6 +12,10 @@
 # Dependencies are stored in the Makefile.dep file. To rebuild this file
 # Just use 'make dep', but this is only needed by developers.
 
+BUILD_TLS=0
+
+CFLAGS+=-fno-lto
+
 release_hdr := $(shell sh -c './mkreleasehdr.sh')
 uname_S := $(shell sh -c 'uname -s 2>/dev/null || echo not')
 uname_M := $(shell sh -c 'uname -m 2>/dev/null || echo not')
@@ -31,7 +35,7 @@ endif
 ifneq ($(OPTIMIZATION),-O0)
 	OPTIMIZATION+=-fno-omit-frame-pointer
 endif
-DEPENDENCY_TARGETS=hiredis linenoise lua hdr_histogram fpconv
+DEPENDENCY_TARGETS=linenoise lua fpconv
 NODEPS:=clean distclean
 
 # Default settings
@@ -177,7 +181,8 @@ ifeq ($(uname_S),SunOS)
 else
 ifeq ($(uname_S),Darwin)
 	# Darwin
-	FINAL_LIBS+= -ldl
+	#FINAL_LIBS+= -ldl
+	FINAL_LIBS+= -lpthread
 	# Homebrew's OpenSSL is not linked to /usr/local to avoid
 	# conflicts with the system's LibreSSL installation so it
 	# must be referenced explicitly during build.
@@ -486,7 +491,8 @@ endif
 
 # valkey-server
 $(SERVER_NAME): $(ENGINE_SERVER_OBJ)
-	$(SERVER_LD) -o $@ $^ ../deps/hiredis/libhiredis.a ../deps/lua/src/liblua.a ../deps/hdr_histogram/libhdrhistogram.a ../deps/fpconv/libfpconv.a $(FINAL_LIBS)
+	$(SERVER_LD) -o $@ $^ ../deps/lua/src/liblua.a ../deps/fpconv/libfpconv.a $(FINAL_LIBS)
+#	$(SERVER_LD) -o $@ $^ ../deps/lua/src/liblua.a ../deps/fpconv/libfpconv.a $(FINAL_LIBS)
 
 # Valkey static library, used to compile against for unit testing
 $(ENGINE_LIB_NAME): $(ENGINE_SERVER_OBJ)

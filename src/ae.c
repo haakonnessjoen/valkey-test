@@ -39,7 +39,6 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <stdlib.h>
-#include <poll.h>
 #include <string.h>
 #include <time.h>
 #include <errno.h>
@@ -49,6 +48,9 @@
 
 /* Include the best multiplexing layer supported by this system.
  * The following should be ordered by performances, descending. */
+#ifdef _WIN32
+#include "ae_wsapoll.c"
+#else
 #ifdef HAVE_EVPORT
 #include "ae_evport.c"
 #else
@@ -59,6 +61,7 @@
 #include "ae_kqueue.c"
 #else
 #include "ae_select.c"
+#endif
 #endif
 #endif
 #endif
@@ -92,6 +95,12 @@ aeEventLoop *aeCreateEventLoop(int setsize) {
     eventLoop->aftersleep = NULL;
     eventLoop->custompoll = NULL;
     eventLoop->flags = 0;
+
+    if (WSAStartup(MAKEWORD(2, 2), &eventLoop->wsaData) != 0) {
+      fprintf(stderr, "WSAStartup failed\n");
+      goto err;
+    }
+
     /* Initialize the eventloop mutex with PTHREAD_MUTEX_ERRORCHECK type */
     pthread_mutexattr_t attr;
     pthread_mutexattr_init(&attr);
@@ -518,6 +527,48 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags) {
 /* Wait for milliseconds until the given file descriptor becomes
  * writable/readable/exception */
 int aeWait(int fd, int mask, long long milliseconds) {
+#ifdef _WIN32
+    // Check if the file descriptor is a socket
+    if (_get_osfhandle(fd) != -1 && (mask & (AE_READABLE | AE_WRITABLE))) {
+        struct pollfd pfd;
+        int retmask = 0, retval;
+
+        memset(&pfd, 0, sizeof(pfd));
+        pfd.fd = fd;
+        if (mask & AE_READABLE) pfd.events |= POLLIN;
+        if (mask & AE_WRITABLE) pfd.events |= POLLOUT;
+
+        retval = WSAPoll(&pfd, 1, (int)milliseconds);
+        if (retval == 1) {
+            if (pfd.revents & POLLIN) retmask |= AE_READABLE;
+            if (pfd.revents & POLLOUT) retmask |= AE_WRITABLE;
+            if (pfd.revents & POLLERR) retmask |= AE_WRITABLE;
+            if (pfd.revents & POLLHUP) retmask |= AE_WRITABLE;
+            return retmask;
+        } else {
+            return retval;
+        }
+    } else {
+        // Handle non-socket file descriptors
+        HANDLE h = (HANDLE)_get_osfhandle(fd);
+        DWORD waitMode = 0;
+        DWORD result;
+
+        if (mask & AE_READABLE) waitMode |= WAIT_OBJECT_0;
+        if (mask & AE_WRITABLE) waitMode |= WAIT_OBJECT_0;
+        
+        result = WaitForSingleObject(h, (DWORD)milliseconds);
+
+        if (result == WAIT_OBJECT_0) {
+            if (mask & AE_READABLE) return AE_READABLE;
+            if (mask & AE_WRITABLE) return AE_WRITABLE;
+        } else if (result == WAIT_TIMEOUT) {
+            return 0;
+        } else {
+            return -1;  // Error occurred
+        }
+    }
+#else
     struct pollfd pfd;
     int retmask = 0, retval;
 
@@ -526,7 +577,8 @@ int aeWait(int fd, int mask, long long milliseconds) {
     if (mask & AE_READABLE) pfd.events |= POLLIN;
     if (mask & AE_WRITABLE) pfd.events |= POLLOUT;
 
-    if ((retval = poll(&pfd, 1, milliseconds)) == 1) {
+    retval = poll(&pfd, 1, milliseconds);
+    if (retval == 1) {
         if (pfd.revents & POLLIN) retmask |= AE_READABLE;
         if (pfd.revents & POLLOUT) retmask |= AE_WRITABLE;
         if (pfd.revents & POLLERR) retmask |= AE_WRITABLE;
@@ -535,6 +587,7 @@ int aeWait(int fd, int mask, long long milliseconds) {
     } else {
         return retval;
     }
+#endif
 }
 
 void aeMain(aeEventLoop *eventLoop) {

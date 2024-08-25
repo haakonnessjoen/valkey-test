@@ -38,6 +38,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#ifdef _WIN32
+#define WORD MYVOID
+#include <windows.h>
+#undef WORD
+#endif
 
 #include "listpack.h"
 #include "listpack_malloc.h"

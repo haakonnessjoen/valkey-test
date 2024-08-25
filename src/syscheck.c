@@ -33,13 +33,17 @@
 #include "anet.h"
 
 #include <time.h>
+#ifndef _WIN32
 #include <sys/resource.h>
+#endif
 #include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#ifndef _WIN32
 #include <sys/wait.h>
+#endif
 
 #ifdef __linux__
 #include <sys/mman.h>

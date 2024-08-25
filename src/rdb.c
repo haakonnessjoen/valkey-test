@@ -43,10 +43,12 @@
 #include <stdatomic.h>
 #include <sys/types.h>
 #include <sys/time.h>
+#ifndef _WIN32
 #include <sys/resource.h>
 #include <sys/wait.h>
 #include <arpa/inet.h>
 #include <sys/stat.h>
+#endif
 #include <sys/param.h>
 
 /* This macro is called when the internal RDB structure is corrupt */
@@ -1508,6 +1510,7 @@ static int rdbSaveInternal(int req, const char *filename, rdbSaveInfo *rsi, int 
         err_op = "fflush";
         goto werr;
     }
+#ifndef _WIN32
     if (fsync(fileno(fp))) {
         err_op = "fsync";
         goto werr;
@@ -1515,6 +1518,11 @@ static int rdbSaveInternal(int req, const char *filename, rdbSaveInfo *rsi, int 
     if (!(rdbflags & RDBFLAGS_KEEP_CACHE) && reclaimFilePageCache(fileno(fp), 0, 0) == -1) {
         serverLog(LL_NOTICE, "Unable to reclaim cache after saving RDB: %s", strerror(errno));
     }
+#else
+    if (!(rdbflags & RDBFLAGS_KEEP_CACHE) && reclaimFilePageCache(fp, 0, 0) == -1) {
+        serverLog(LL_NOTICE, "Unable to reclaim cache after saving RDB: %s", strerror(errno));
+    }
+#endif
     if (fclose(fp)) {
         fp = NULL;
         err_op = "fclose";
@@ -1641,6 +1649,9 @@ void rdbRemoveTempFile(pid_t childpid, int from_signal) {
     valkey_strlcat(tmpfile, pid, sizeof(tmpfile));
     valkey_strlcat(tmpfile, ".rdb", sizeof(tmpfile));
 
+#ifdef WIN32
+    DeleteFile(tmpfile);
+#else
     if (from_signal) {
         /* bg_unlink is not async-signal-safe, but in this case we don't really
          * need to close the fd, it'll be released when the process exists. */
@@ -1650,6 +1661,7 @@ void rdbRemoveTempFile(pid_t childpid, int from_signal) {
     } else {
         bg_unlink(tmpfile);
     }
+#endif
 }
 
 /* This function is called by rdbLoadObject() when the code is in RDB-check
@@ -3386,12 +3398,45 @@ eoferr:
  * If you pass an 'rsi' structure initialized with RDB_SAVE_INFO_INIT, the
  * loading code will fill the information fields in the structure. */
 int rdbLoad(char *filename, rdbSaveInfo *rsi, int rdbflags) {
+#ifdef WIN32
+    HANDLE hFile;
+    HANDLE hFileMapping;
+    LARGE_INTEGER fileSize;
+#else
     FILE *fp;
+    struct stat sb;
+#endif
     rio rdb;
     int retval;
-    struct stat sb;
     int rdb_fd;
 
+#ifdef WIN32
+    // Open the file for reading
+    hFile = CreateFile(
+        filename,
+        GENERIC_READ,
+        FILE_SHARE_READ,
+        NULL,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        NULL
+    );
+
+    if (hFile == INVALID_HANDLE_VALUE) {
+        DWORD error = GetLastError();
+        if (error == ERROR_FILE_NOT_FOUND) return RDB_NOT_EXIST;
+
+        serverLog(LL_WARNING, "Fatal error: can't open the RDB file %s for reading: %lu", filename, error);
+        return RDB_FAILED;
+    }
+
+    if (!GetFileSizeEx(hFile, &fileSize)) {
+        fileSize.QuadPart = 0;
+    }
+
+    startLoadingFile(fileSize.QuadPart, filename, rdbflags);
+    rioInitWithFile(&rdb, hFile);
+#else
     fp = fopen(filename, "r");
     if (fp == NULL) {
         if (errno == ENOENT) return RDB_NOT_EXIST;
@@ -3404,16 +3449,35 @@ int rdbLoad(char *filename, rdbSaveInfo *rsi, int rdbflags) {
 
     startLoadingFile(sb.st_size, filename, rdbflags);
     rioInitWithFile(&rdb, fp);
+#endif
 
     retval = rdbLoadRio(&rdb, rdbflags, rsi);
 
+#ifdef _WIN32
+    CloseHandle(hFile);
+#else
     fclose(fp);
+#endif
+
     stopLoading(retval == C_OK);
     /* Reclaim the cache backed by rdb */
     if (retval == C_OK && !(rdbflags & RDBFLAGS_KEEP_CACHE)) {
         /* TODO: maybe we could combine the fopen and open into one in the future */
+#ifdef _WIN32
+        hFile = CreateFile(
+            filename,
+            GENERIC_READ,
+            FILE_SHARE_READ,
+            NULL,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            NULL
+        );
+        if (rdb_fd != NULL) bioCreateCloseJob(hFile, 0, 1);
+#else
         rdb_fd = open(filename, O_RDONLY);
         if (rdb_fd >= 0) bioCreateCloseJob(rdb_fd, 0, 1);
+#endif
     }
     return (retval == C_OK) ? RDB_OK : RDB_FAILED;
 }
@@ -3439,7 +3503,9 @@ static void backgroundSaveDoneHandlerDisk(int exitcode, int bysignal, time_t sav
         latencyAddSampleIfNeeded("rdb-unlink-temp-file", latency);
         /* SIGUSR1 is whitelisted, so we have a way to kill a child without
          * triggering an error condition. */
+#ifndef _WIN32
         if (bysignal != SIGUSR1) server.lastbgsave_status = C_ERR;
+#endif
     }
 }
 
@@ -3493,6 +3559,7 @@ void backgroundSaveDoneHandler(int exitcode, int bysignal) {
  * the child did not exit for an error, but because we wanted), and performs
  * the cleanup needed. */
 void killRDBChild(void) {
+#ifndef _WIN32
     kill(server.child_pid, SIGUSR1);
     /* Because we are not using here waitpid (like we have in killAppendOnlyChild
      * and TerminateModuleForkChild), all the cleanup operations is done by
@@ -3500,6 +3567,7 @@ void killRDBChild(void) {
      * This includes:
      * - resetChildState
      * - rdbRemoveTempFile */
+#endif
 }
 
 /* Spawn an RDB child that writes the RDB to the sockets of the replicas

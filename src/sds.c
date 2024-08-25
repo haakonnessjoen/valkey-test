@@ -34,6 +34,9 @@
 #include <string.h>
 #include <ctype.h>
 #include <limits.h>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 #include "serverassert.h"
 #include "sds.h"
 #include "sdsalloc.h"

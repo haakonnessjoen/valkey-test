@@ -82,6 +82,11 @@ static connection *connCreateUnix(void) {
     return conn;
 }
 
+#ifdef _WIN32
+static connection *connCreateAcceptedUnix(SOCKET fd, void *priv) {
+    return NULL;
+}
+#else
 static connection *connCreateAcceptedUnix(int fd, void *priv) {
     UNUSED(priv);
     connection *conn = connCreateUnix();
@@ -89,6 +94,7 @@ static connection *connCreateAcceptedUnix(int fd, void *priv) {
     conn->state = CONN_STATE_ACCEPTING;
     return conn;
 }
+#endif
 
 static void connUnixAcceptHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
     int cfd;

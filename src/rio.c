@@ -47,6 +47,7 @@
 
 #include "fmacros.h"
 #include "fpconv_dtoa.h"
+#include "mingwfixes.h"
 #include <string.h>
 #include <stdio.h>
 #include <unistd.h>
@@ -147,7 +148,9 @@ static size_t rioFileWrite(rio *r, const void *buf, size_t len) {
                     return 0;
             }
 #else
+#ifndef _WIN32
             if (valkey_fsync(fileno(r->io.file.fp)) == -1) return 0;
+#endif
 #endif
             if (r->io.file.reclaim_cache) {
                 /* In Linux sync_file_range just issue a writeback request to
@@ -157,7 +160,11 @@ static size_t rioFileWrite(rio *r, const void *buf, size_t len) {
                  *
                  * So we posix_fadvise the whole file, and the writeback-ed
                  * pages will have other chances to be reclaimed. */
+#ifndef _WIN32
                 reclaimFilePageCache(fileno(r->io.file.fp), 0, 0);
+#else
+                reclaimFilePageCache(r->io.file.fp, 0, 0);
+#endif
             }
             r->io.file.buffered = 0;
         }

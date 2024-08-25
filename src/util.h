@@ -89,8 +89,13 @@ int dirRemove(char *dname);
 int fileExist(char *filename);
 sds makePath(char *path, char *filename);
 int fsyncFileDir(const char *filename);
+#ifdef _WIN32
+int reclaimFilePageCache(HANDLE fd, size_t offset, size_t length);
+char *fgets_async_signal_safe(char *dest, int buff_size, HANDLE fd);
+#else
 int reclaimFilePageCache(int fd, size_t offset, size_t length);
 char *fgets_async_signal_safe(char *dest, int buff_size, int fd);
+#endif
 int vsnprintf_async_signal_safe(char *to, size_t size, const char *format, va_list ap);
 #ifdef __GNUC__
 int snprintf_async_signal_safe(char *to, size_t n, const char *fmt, ...) __attribute__((format(printf, 3, 4)));

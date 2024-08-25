@@ -32,8 +32,10 @@
 #include <string.h>
 #include <limits.h>
 #include <errno.h>
+#ifndef _WIN32
 #include <termios.h>
 #include <sys/ioctl.h>
+#endif
 #if defined(__sun)
 #include <stropts.h>
 #endif
@@ -66,13 +68,17 @@
 #define NO_SANITIZE(sanitizer)
 #endif
 
+#ifndef _WIN32
 static struct winsize ws;
+#endif
 size_t progress_printed; /* Printed chars in screen-wide progress bar. */
 size_t progress_full;    /* How many chars to write to fill the progress bar. */
 
 void memtest_progress_start(char *title, int pass) {
     int j;
-
+#ifdef _WIN32
+    printf("WIN32: Memtest is not implemented\n");
+#else
     printf("\x1b[H\x1b[2J"); /* Cursor home, clear screen. */
     /* Fill with dots. */
     for (j = 0; j < ws.ws_col * (ws.ws_row - 2); j++) printf(".");
@@ -83,6 +89,7 @@ void memtest_progress_start(char *title, int pass) {
     progress_printed = 0;
     progress_full = (size_t)ws.ws_col * (ws.ws_row - 3);
     fflush(stdout);
+#endif
 }
 
 void memtest_progress_end(void) {
@@ -345,6 +352,9 @@ void memtest_alloc_and_test(size_t megabytes, int passes) {
 }
 
 void memtest(size_t megabytes, int passes) {
+#ifdef _WIN32
+    printf("WIN32: Memtest is not implemented\n");
+#else
 #if !defined(__HAIKU__)
     if (ioctl(1, TIOCGWINSZ, &ws) == -1) {
         ws.ws_col = 80;
@@ -360,4 +370,5 @@ void memtest(size_t megabytes, int passes) {
     printf("1) memtest86: http://www.memtest86.com/\n");
     printf("2) memtester: http://pyropus.ca/software/memtester/\n");
     exit(0);
+#endif
 }

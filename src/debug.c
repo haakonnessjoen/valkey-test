@@ -38,11 +38,15 @@
 #include "threads_mngr.h"
 #include "io_threads.h"
 
+#ifndef _WIN32
 #include <arpa/inet.h>
-#include <signal.h>
 #include <dlfcn.h>
+#endif
+#include <signal.h>
 #include <fcntl.h>
+#ifndef _WIN32
 #include <sys/mman.h>
+#endif
 #include <unistd.h>
 
 #ifdef HAVE_BACKTRACE
@@ -76,7 +80,9 @@ int bugReportStart(void);
 void printCrashReport(void);
 void bugReportEnd(int killViaSignal, int sig);
 void logStackTrace(void *eip, int uplevel, int current_thread);
+#ifndef _WIN32
 void sigalrmSignalHandler(int sig, siginfo_t *info, void *secret);
+#endif
 
 /* ================================= Debugging ============================== */
 
@@ -386,6 +392,7 @@ void mallctl_string(client *c, robj **argv, int argc) {
 #endif
 
 void debugCommand(client *c) {
+#ifndef _WIN32
     if (c->argc == 2 && !strcasecmp(c->argv[1]->ptr, "help")) {
         const char *help[] = {
             "AOF-FLUSH-SLEEP <microsec>",
@@ -1017,6 +1024,7 @@ void debugCommand(client *c) {
         addReplySubcommandSyntaxError(c);
         return;
     }
+#endif
 }
 
 /* =========================== Crash handling  ============================== */
@@ -2005,6 +2013,7 @@ void doFastMemoryTest(void) {
  * bytes, searching for E8 (callq) opcodes, and dumping the symbols
  * and the call offset if they appear to be valid. */
 void dumpX86Calls(void *addr, size_t len) {
+#ifndef _WIN32
     size_t j;
     unsigned char *p = addr;
     Dl_info info;
@@ -2027,9 +2036,11 @@ void dumpX86Calls(void *addr, size_t len) {
             j += 4; /* Skip the 32 bit immediate. */
         }
     }
+#endif
 }
 
 void dumpCodeAroundEIP(void *eip) {
+#ifndef _WIN32
     Dl_info info;
     if (dladdr(eip, &info) != 0) {
         serverLog(LL_WARNING | LL_RAW,
@@ -2055,6 +2066,7 @@ void dumpCodeAroundEIP(void *eip) {
             dumpX86Calls(base, len);
         }
     }
+#endif
 }
 
 void invalidFunctionWasCalled(void) {
@@ -2062,6 +2074,7 @@ void invalidFunctionWasCalled(void) {
 
 typedef void (*invalidFunctionWasCalledType)(void);
 
+#ifndef _WIN32
 __attribute__((noinline)) static void sigsegvHandler(int sig, siginfo_t *info, void *secret) {
     UNUSED(secret);
     UNUSED(info);
@@ -2177,6 +2190,7 @@ void removeSigSegvHandlers(void) {
     sigaction(SIGILL, &act, NULL);
     sigaction(SIGABRT, &act, NULL);
 }
+#endif
 
 void printCrashReport(void) {
     server.crashed = 1;
@@ -2199,6 +2213,7 @@ void printCrashReport(void) {
 }
 
 void bugReportEnd(int killViaSignal, int sig) {
+#ifndef _WIN32
     struct sigaction act;
 
     serverLogFromHandler(LL_WARNING | LL_RAW,
@@ -2230,6 +2245,7 @@ void bugReportEnd(int killViaSignal, int sig) {
     act.sa_handler = SIG_DFL;
     sigaction(sig, &act, NULL);
     kill(getpid(), sig);
+#endif
 }
 
 /* ==================== Logging functions for debugging ===================== */
@@ -2259,6 +2275,7 @@ void serverLogHexDump(int level, char *descr, void *value, size_t len) {
 /* =========================== Software Watchdog ============================ */
 #include <sys/time.h>
 
+#ifndef _WIN32
 void sigalrmSignalHandler(int sig, siginfo_t *info, void *secret) {
 #ifdef HAVE_BACKTRACE
     ucontext_t *uc = (ucontext_t *)secret;
@@ -2281,10 +2298,12 @@ void sigalrmSignalHandler(int sig, siginfo_t *info, void *secret) {
 #endif
     serverLogRawFromHandler(LL_WARNING, "--------\n");
 }
+#endif
 
 /* Schedule a SIGALRM delivery after the specified period in milliseconds.
  * If a timer is already scheduled, this function will re-schedule it to the
  * specified time. If period is 0 the current timer is disabled. */
+#ifndef _WIN32
 void watchdogScheduleSignal(int period) {
     struct itimerval it;
 
@@ -2309,10 +2328,13 @@ void applyWatchdogPeriod(void) {
         watchdogScheduleSignal(server.watchdog_period); /* Adjust the current timer. */
     }
 }
+#endif
 
 void debugPauseProcess(void) {
     serverLog(LL_NOTICE, "Process is about to stop.");
+#ifndef _WIN32
     raise(SIGSTOP);
+#endif
     serverLog(LL_NOTICE, "Process has been continued.");
 }
 

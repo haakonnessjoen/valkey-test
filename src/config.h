@@ -30,6 +30,8 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
+#define __STDC_NO_THREADS__ 1
+
 #include <sys/param.h>
 
 #ifdef __APPLE__
@@ -125,6 +127,9 @@
 #endif
 #endif
 
+#ifdef _WIN32
+#define valkey_fsync(fd) FlushFileBuffers(fd)
+#else
 /* Define valkey_fsync to fdatasync() in Linux and fsync() for all the rest */
 #if defined(__linux__)
 #define valkey_fsync(fd) fdatasync(fd)
@@ -132,6 +137,7 @@
 #define valkey_fsync(fd) fcntl(fd, F_FULLFSYNC)
 #else
 #define valkey_fsync(fd) fsync(fd)
+#endif
 #endif
 
 #if defined(__FreeBSD__)

@@ -41,8 +41,10 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <stdatomic.h>
+#ifndef _WIN32
 #include <sys/socket.h>
 #include <sys/stat.h>
+#endif
 #include <ctype.h>
 
 void replicationDiscardCachedPrimary(void);
@@ -99,6 +101,9 @@ char *replicationGetReplicaName(client *c) {
  * the foreground unlink() will only remove the fs name, and deleting the
  * file's storage space will only happen once the last reference is lost. */
 int bg_unlink(const char *filename) {
+#ifdef WIN32
+    return -1;
+#else
     int fd = open(filename, O_RDONLY | O_NONBLOCK);
     if (fd == -1) {
         /* Can't open the file? Fall back to unlinking in the main thread. */
@@ -118,6 +123,7 @@ int bg_unlink(const char *filename) {
         bioCreateCloseJob(fd, 0, 0);
         return 0; /* Success. */
     }
+#endif
 }
 
 /* ---------------------------------- PRIMARY -------------------------------- */
@@ -1471,6 +1477,7 @@ void replicaStartCommandStream(client *replica) {
  * to take RDB files around, this violates certain policies in certain
  * environments. */
 void removeRDBUsedToSyncReplicas(void) {
+#ifndef _WIN32
     /* If the feature is disabled, return ASAP but also clear the
      * RDBGeneratedByReplication flag in case it was set. Otherwise if the
      * feature was enabled, but gets disabled later with CONFIG SET, the
@@ -1508,11 +1515,13 @@ void removeRDBUsedToSyncReplicas(void) {
             }
         }
     }
+#endif
 }
 
 /* Close the repldbfd and reclaim the page cache if the client hold
  * the last reference to replication DB */
 void closeRepldbfd(client *myself) {
+#ifndef _WIN32
     listNode *ln;
     listIter li;
     int reclaim = 1;
@@ -1531,6 +1540,7 @@ void closeRepldbfd(client *myself) {
         close(myself->repldbfd);
     }
     myself->repldbfd = -1;
+#endif
 }
 
 void sendBulkToReplica(connection *conn) {
@@ -1722,6 +1732,7 @@ void rdbPipeReadHandler(struct aeEventLoop *eventLoop, int fd, void *clientData,
  * The 'type' argument is the type of the child that terminated
  * (if it had a disk or socket target). */
 void updateReplicasWaitingBgsave(int bgsaveerr, int type) {
+#ifndef _WIN32
     listNode *ln;
     listIter li;
 
@@ -1801,6 +1812,7 @@ void updateReplicasWaitingBgsave(int bgsaveerr, int type) {
             }
         }
     }
+#endif
 }
 
 /* Change the current instance replication ID with a new, random one.
@@ -1984,6 +1996,10 @@ void replicationAttachToNewPrimary(void) {
 /* Asynchronously read the SYNC payload we receive from a primary */
 #define REPL_MAX_WRITTEN_BEFORE_FSYNC (1024 * 1024 * 8) /* 8 MB */
 void readSyncBulkPayload(connection *conn) {
+#ifdef _WIN32
+    serverLog(LL_WARNING, "WIN32: Replication not supported");
+    return;
+#else
     char buf[PROTO_IOBUF_LEN];
     ssize_t nread, readlen, nwritten;
     int use_diskless_load = useDisklessLoad();
@@ -2408,6 +2424,7 @@ void readSyncBulkPayload(connection *conn) {
 error:
     cancelReplicationHandshake(1);
     return;
+#endif
 }
 
 char *receiveSynchronousResponse(connection *conn) {
@@ -2532,9 +2549,15 @@ void replicationAbortDualChannelSyncTransfer(void) {
     }
     zfree(server.repl_transfer_tmpfile);
     server.repl_transfer_tmpfile = NULL;
+#ifdef _WIN32
+    if (server.repl_transfer_fd != NULL) {
+        CloseHandle(server.repl_transfer_fd);
+        server.repl_transfer_fd = NULL;
+#else
     if (server.repl_transfer_fd != -1) {
         close(server.repl_transfer_fd);
         server.repl_transfer_fd = -1;
+#endif
     }
     server.repl_rdb_channel_state = REPL_DUAL_CHANNEL_STATE_NONE;
     server.repl_provisional_primary.read_reploff = 0;
@@ -2720,8 +2743,13 @@ error:
         connClose(server.repl_rdb_transfer_s);
         server.repl_rdb_transfer_s = NULL;
     }
+#ifdef _WIN32
+    if (server.repl_transfer_fd != NULL) CloseHandle(server.repl_transfer_fd);
+    server.repl_transfer_fd = NULL;
+#else
     if (server.repl_transfer_fd != -1) close(server.repl_transfer_fd);
     server.repl_transfer_fd = -1;
+#endif
     server.repl_state = REPL_STATE_CONNECT;
     replicationAbortDualChannelSyncTransfer();
     return;
@@ -3306,6 +3334,7 @@ error:
 /* This handler fires when the non blocking connect was able to
  * establish a connection with the primary. */
 void syncWithPrimary(connection *conn) {
+#ifndef _WIN32
     char tmpfile[256], *err = NULL;
     int dfd = -1, maxtries = 5;
     int psync_result;
@@ -3650,6 +3679,7 @@ write_error: /* Handle sendCommand() errors. */
     serverLog(LL_WARNING, "Sending command to primary in replication handshake: %s", err);
     sdsfree(err);
     goto error;
+#endif
 }
 
 int connectWithPrimary(void) {
@@ -3682,6 +3712,7 @@ void undoConnectWithPrimary(void) {
  * Never call this function directly, use cancelReplicationHandshake() instead.
  */
 void replicationAbortSyncTransfer(void) {
+#ifndef _WIN32
     serverAssert(server.repl_state == REPL_STATE_TRANSFER);
     undoConnectWithPrimary();
     if (server.repl_transfer_fd != -1) {
@@ -3691,6 +3722,7 @@ void replicationAbortSyncTransfer(void) {
         server.repl_transfer_tmpfile = NULL;
         server.repl_transfer_fd = -1;
     }
+#endif
 }
 
 /* This function aborts a non blocking replication attempt if there is one

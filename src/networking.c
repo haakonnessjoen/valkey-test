@@ -35,8 +35,10 @@
 #include "fmtargs.h"
 #include <strings.h>
 #include "io_threads.h"
+#ifndef _WIN32
 #include <sys/socket.h>
 #include <sys/uio.h>
+#endif
 #include <math.h>
 #include <ctype.h>
 #include <stdatomic.h>
@@ -1520,7 +1522,11 @@ void unlinkClient(client *c) {
         if (server.child_type && !c->flag.repl_rdb_channel) {
             connShutdown(c->conn);
         } else if (c->flag.repl_rdb_channel) {
+#ifdef _WIN32
+            shutdown(c->conn->fd, SD_BOTH);
+#else
             shutdown(c->conn->fd, SHUT_RDWR);
+#endif
         }
         connClose(c->conn);
         c->conn = NULL;

@@ -34,7 +34,9 @@
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
+#ifndef _WIN32
 #include <sys/uio.h>
+#endif
 
 #include "ae.h"
 
@@ -74,7 +76,11 @@ typedef struct ConnectionType {
     int (*configure)(void *priv, int reconfigure);
 
     /* ae & accept & listen & error & address handler */
+#ifdef _WIN32
     void (*ae_handler)(struct aeEventLoop *el, int fd, void *clientData, int mask);
+#else
+    void (*ae_handler)(struct aeEventLoop *el, SOCKET fd, void *clientData, int mask);
+#endif
     aeFileProc *accept_handler;
     int (*addr)(connection *conn, char *ip, size_t ip_len, int *port, int remote);
     int (*is_local)(connection *conn);
@@ -82,7 +88,11 @@ typedef struct ConnectionType {
 
     /* create/shutdown/close connection */
     connection *(*conn_create)(void);
+#ifdef _WIN32
+    connection *(*conn_create_accepted)(SOCKET fd, void *priv);
+#else
     connection *(*conn_create_accepted)(int fd, void *priv);
+#endif
     void (*shutdown)(struct connection *conn);
     void (*close)(struct connection *conn);
 
@@ -124,7 +134,11 @@ struct connection {
     ConnectionType *type;
     ConnectionState state;
     int last_errno;
+#ifdef _WIN32
+    SOCKET fd;
+#else
     int fd;
+#endif
     short int flags;
     short int refs;
     unsigned short int iovcnt;

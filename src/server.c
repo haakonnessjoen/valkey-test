@@ -44,24 +44,32 @@
 
 #include <time.h>
 #include <signal.h>
+#ifndef _WIN32
 #include <sys/wait.h>
+#endif
 #include <errno.h>
 #include <ctype.h>
 #include <stdarg.h>
+#ifndef _WIN32
 #include <arpa/inet.h>
+#endif
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <sys/file.h>
 #include <sys/time.h>
+#ifndef _WIN32
 #include <sys/resource.h>
 #include <sys/uio.h>
 #include <sys/un.h>
+#endif
 #include <limits.h>
 #include <float.h>
 #include <math.h>
+#ifndef _WIN32
 #include <sys/utsname.h>
-#include <locale.h>
 #include <sys/socket.h>
+#endif
+#include <locale.h>
 
 #ifdef __linux__
 #include <sys/mman.h>
@@ -150,6 +158,7 @@ void serverLogRaw(int level, const char *msg) {
     fflush(fp);
 
     if (!log_to_stdout) fclose(fp);
+
     if (server.syslog_enabled) syslog(syslogLevelMap[level], "%s", msg);
 }
 
@@ -1091,7 +1100,11 @@ static inline void updateCachedTimeWithUs(int update_daylight_info, const long l
     if (update_daylight_info) {
         struct tm tm;
         time_t ut = server.unixtime;
+#ifdef _WIN32
+	localtime_s(&tm, &ut);
+#else
         localtime_r(&ut, &tm);
+#endif
         atomic_store_explicit(&server.daylight_active, tm.tm_isdst, memory_order_relaxed);
     }
 }
@@ -1135,6 +1148,10 @@ void checkChildrenDone(void) {
     int statloc = 0;
     pid_t pid;
 
+#ifdef _WIN32
+    serverLog(LL_WARNING, "WIN32: Unhandeled waitpid()");
+    return;
+#else
     if ((pid = waitpid(-1, &statloc, WNOHANG)) != 0) {
         int exitcode = WIFEXITED(statloc) ? WEXITSTATUS(statloc) : -1;
         int bysignal = 0;
@@ -1177,6 +1194,7 @@ void checkChildrenDone(void) {
         /* start any pending forks immediately. */
         replicationStartPendingFork();
     }
+#endif
 }
 
 /* Called from serverCron and cronUpdateMemoryStats to update cached memory metrics. */
@@ -2012,7 +2030,11 @@ void initServerConfig(void) {
     server.aof_rewrite_time_start = -1;
     server.aof_lastbgrewrite_status = C_OK;
     server.aof_delayed_fsync = 0;
+#ifdef _WIN32
+    server.aof_fd = NULL;
+#else
     server.aof_fd = -1;
+#endif
     server.aof_selected_db = -1; /* Make sure the first time will not match */
     server.aof_flush_postponed_start = 0;
     server.aof_last_incr_size = 0;
@@ -2055,7 +2077,11 @@ void initServerConfig(void) {
     server.repl_state = REPL_STATE_NONE;
     server.repl_rdb_channel_state = REPL_DUAL_CHANNEL_STATE_NONE;
     server.repl_transfer_tmpfile = NULL;
+#ifdef _WIN32
+    server.repl_transfer_fd = NULL;
+#else
     server.repl_transfer_fd = -1;
+#endif
     server.repl_transfer_s = NULL;
     server.repl_syncio_timeout = CONFIG_REPL_SYNCIO_TIMEOUT;
     server.repl_down_since = 0; /* Never connected, repl is down since EVER. */
@@ -2143,6 +2169,9 @@ int restartServer(int flags, mstime_t delay) {
         return C_ERR;
     }
 
+#ifdef _WIN32
+    serverLog(LL_WARNING, "WIN32: TODO: Write code to watch all file handles and close them here.");
+#else
     /* Close all file descriptors, with the exception of stdin, stdout, stderr
      * which are useful if we restart a server which is not daemonized. */
     for (j = 3; j < (int)server.maxclients + 1024; j++) {
@@ -2150,6 +2179,7 @@ int restartServer(int flags, mstime_t delay) {
          * Valgrind issues a warning on close(). */
         if (fcntl(j, F_GETFD) != -1) close(j);
     }
+#endif
 
     /* Execute the server with the original command line. */
     if (delay) usleep(delay * 1000);
@@ -2240,6 +2270,10 @@ int setOOMScoreAdj(int process_class) {
  * max number of clients, the function will do the reverse setting
  * server.maxclients to the value that we can actually handle. */
 void adjustOpenFilesLimit(void) {
+#ifdef _WIN32
+    serverLog(LL_WARNING, "WIN32: Cannot increase the maximum amount of open files or sockets.");
+    return;
+#else
     rlim_t maxfiles = server.maxclients + CONFIG_MIN_RESERVED_FDS;
     struct rlimit limit;
 
@@ -2319,6 +2353,7 @@ void adjustOpenFilesLimit(void) {
             }
         }
     }
+#endif
 }
 
 /* Check that server.tcp_backlog can be actually enforced in Linux according
@@ -2450,9 +2485,11 @@ int listenToPort(connListener *sfd) {
             serverLog(LL_WARNING, "Warning: Could not create server TCP listening socket %s:%d: %s", addr, port,
                       server.neterr);
             if (net_errno == EADDRNOTAVAIL && optional) continue;
+#ifndef _WIN32
             if (net_errno == ENOPROTOOPT || net_errno == EPROTONOSUPPORT || net_errno == ESOCKTNOSUPPORT ||
                 net_errno == EPFNOSUPPORT || net_errno == EAFNOSUPPORT)
                 continue;
+#endif
 
             /* Rollback successful listens before exiting */
             closeListener(sfd);
@@ -2542,15 +2579,21 @@ void makeThreadKillable(void) {
 void initServer(void) {
     int j;
 
+#ifndef _WIN32
     signal(SIGHUP, SIG_IGN);
     signal(SIGPIPE, SIG_IGN);
+#endif
     setupSignalHandlers();
     ThreadsManager_init();
     makeThreadKillable();
 
+#ifdef _WIN32
+    server.syslog_enabled = 0;
+#else
     if (server.syslog_enabled) {
         openlog(server.syslog_ident, LOG_PID | LOG_NDELAY | LOG_NOWAIT, server.syslog_facility);
     }
+#endif
 
     /* Initialization after setting defaults from the config system. */
     server.aof_state = server.aof_enabled ? AOF_ON : AOF_OFF;
@@ -4380,12 +4423,12 @@ int finishShutdown(void) {
     /* Close the listening sockets. Apparently this allows faster restarts. */
     closeListeningSockets(1);
 
-#if !defined(__sun)
+#if !defined(__sun) && !defined(_WIN32)
     /* Unlock the cluster config file before shutdown */
     if (server.cluster_enabled && server.cluster_config_file_lock_fd != -1) {
         flock(server.cluster_config_file_lock_fd, LOCK_UN | LOCK_NB);
     }
-#endif /* __sun */
+#endif /* __sun || _WIN32 */
 
 
     serverLog(LL_WARNING, "%s is now ready to exit, bye bye...", server.sentinel_mode ? "Sentinel" : "Valkey");
@@ -5367,7 +5410,12 @@ sds genValkeyInfoString(dict *section_dict, int all_sections, int everything) {
     /* Server */
     if (all_sections || (dictFind(section_dict, "server") != NULL)) {
         static int call_uname = 1;
+#ifdef _WIN32
+        static OSVERSIONINFO osvi;
+        osvi.dwOSVersionInfoSize = sizeof(OSVERSIONINFO);
+#else
         static struct utsname name;
+#endif
         char *mode;
         char *supervised;
 
@@ -5392,8 +5440,12 @@ sds genValkeyInfoString(dict *section_dict, int all_sections, int everything) {
         if (sections++) info = sdscat(info, "\r\n");
 
         if (call_uname) {
+#ifdef _WIN32
+            GetVersionEx(&osvi);
+#else
             /* Uname can be slow and is always the same output. Cache it. */
             uname(&name);
+#endif
             call_uname = 0;
         }
 
@@ -5407,9 +5459,14 @@ sds genValkeyInfoString(dict *section_dict, int all_sections, int everything) {
             "redis_build_id:%s\r\n", serverBuildIdString(),
             "%s_mode:", (server.extended_redis_compat ? "redis" : "server"),
             "%s\r\n", mode,
+#ifdef _WIN32
+            "os: Windows %d.", osvi.dwMajorVersion,
+            "%d\r\n", osvi.dwMinorVersion,
+#else
             "os:%s", name.sysname,
             " %s", name.release,
             " %s\r\n", name.machine,
+#endif
             "arch_bits:%i\r\n", server.arch_bits,
             "monotonic_clock:%s\r\n", monotonicInfoString(),
             "multiplexing_api:%s\r\n", aeGetApiName(),
@@ -5849,7 +5906,18 @@ sds genValkeyInfoString(dict *section_dict, int all_sections, int everything) {
     /* CPU */
     if (all_sections || (dictFind(section_dict, "cpu") != NULL)) {
         if (sections++) info = sdscat(info, "\r\n");
+#ifdef _WIN32
+        info = sdscatprintf(info,
+                            "# CPU\r\n"
+                            "used_cpu_sys:%ld.%06ld\r\n"
+                            "used_cpu_user:%ld.%06ld\r\n"
+                            "used_cpu_sys_children:%ld.%06ld\r\n"
+                            "used_cpu_user_children:%ld.%06ld\r\n",
+                            (long)0, (long)0,
+                            (long)0, (long)0, (long)0,
+                            (long)0, (long)0, (long)0);
 
+#else
         struct rusage self_ru, c_ru;
         getrusage(RUSAGE_SELF, &self_ru);
         getrusage(RUSAGE_CHILDREN, &c_ru);
@@ -5862,6 +5930,7 @@ sds genValkeyInfoString(dict *section_dict, int all_sections, int everything) {
                             (long)self_ru.ru_stime.tv_sec, (long)self_ru.ru_stime.tv_usec,
                             (long)self_ru.ru_utime.tv_sec, (long)self_ru.ru_utime.tv_usec, (long)c_ru.ru_stime.tv_sec,
                             (long)c_ru.ru_stime.tv_usec, (long)c_ru.ru_utime.tv_sec, (long)c_ru.ru_utime.tv_usec);
+#endif
 #ifdef RUSAGE_THREAD
         struct rusage m_ru;
         getrusage(RUSAGE_THREAD, &m_ru);
@@ -6067,6 +6136,10 @@ void createPidFile(void) {
 void daemonize(void) {
     int fd;
 
+#ifdef _WIN32
+	fprintf(stderr, "WIN32: Error, daemonizing not supported in windows\n");
+	exit(1);
+#else
     if (fork() != 0) exit(0); /* parent exits */
     setsid();                 /* create a new session */
 
@@ -6079,6 +6152,7 @@ void daemonize(void) {
         dup2(fd, STDERR_FILENO);
         if (fd > STDERR_FILENO) close(fd);
     }
+#endif
 }
 
 sds getVersion(void) {
@@ -6173,6 +6247,23 @@ int changeListener(connListener *listener) {
     return C_OK;
 }
 
+#ifdef _WIN32
+BOOL WINAPI sigShutdownHandler(DWORD dwCtrlType) {
+    switch (dwCtrlType) {
+        case CTRL_C_EVENT:
+        case CTRL_CLOSE_EVENT:
+            serverLogRawFromHandler(LL_WARNING, "Received CTRL_CLOSE_EVENT scheduling shutdown...");
+            DWORD pid = GetCurrentProcessId();
+            rdbRemoveTempFile(pid, 1);
+            server.shutdown_asap = 1;
+            server.last_sig_received = SIGTERM;
+            return TRUE;
+
+        default:
+            return FALSE;
+    }
+}
+#else
 static void sigShutdownHandler(int sig) {
     char *msg;
 
@@ -6198,8 +6289,15 @@ static void sigShutdownHandler(int sig) {
     server.shutdown_asap = 1;
     server.last_sig_received = sig;
 }
+#endif
 
 void setupSignalHandlers(void) {
+#ifdef _WIN32
+    if (!SetConsoleCtrlHandler(sigShutdownHandler, TRUE)) {
+        serverLog(LL_WARNING, "WIN32: Error adding shutdown handler to process");
+        return;
+    }
+#else
     struct sigaction act;
 
     sigemptyset(&act.sa_mask);
@@ -6209,6 +6307,7 @@ void setupSignalHandlers(void) {
     sigaction(SIGINT, &act, NULL);
 
     setupDebugSigHandlers();
+#endif
 }
 
 /* This is the signal handler for children process. It is currently useful
@@ -6223,6 +6322,10 @@ static void sigKillChildHandler(int sig) {
 }
 
 void setupChildSignalHandlers(void) {
+#ifdef _WIN32
+    // TODO: Keep track of children
+    return;
+#else
     struct sigaction act;
 
     /* When the SA_SIGINFO flag is set in sa_flags then sa_sigaction is used.
@@ -6231,6 +6334,7 @@ void setupChildSignalHandlers(void) {
     act.sa_flags = 0;
     act.sa_handler = sigKillChildHandler;
     sigaction(SIGUSR1, &act, NULL);
+#endif
 }
 
 /* After fork, the child process will inherit the resources
@@ -6239,8 +6343,13 @@ void setupChildSignalHandlers(void) {
  * parent restarts it can bind/lock despite the child possibly still running. */
 void closeChildUnusedResourceAfterFork(void) {
     closeListeningSockets(0);
+#ifdef _WIN32
+    if (server.cluster_enabled && server.cluster_config_file_lock_fd != -1)
+        CloseHandle(server.cluster_config_file_lock_fd);
+#else
     if (server.cluster_enabled && server.cluster_config_file_lock_fd != -1)
         close(server.cluster_config_file_lock_fd); /* don't care if this fails */
+#endif
 
     /* Clear server.pidfile, this is the parent pidfile which should not
      * be touched (or deleted) by the child (on exit / crash) */
@@ -6250,6 +6359,10 @@ void closeChildUnusedResourceAfterFork(void) {
 
 /* purpose is one of CHILD_TYPE_ types */
 int serverFork(int purpose) {
+#ifdef _WIN32
+    fprintf(stderr, "WIN32: Cannot fork\n");
+    return -1;
+#else
     if (isMutuallyExclusiveChildType(purpose)) {
         if (hasActiveChildProcess()) {
             errno = EEXIST;
@@ -6315,6 +6428,7 @@ int serverFork(int purpose) {
         moduleFireServerEvent(VALKEYMODULE_EVENT_FORK_CHILD, VALKEYMODULE_SUBEVENT_FORK_CHILD_BORN, NULL);
     }
     return childpid;
+#endif
 }
 
 void sendChildCowInfo(childInfoType info_type, char *pname) {
@@ -6581,6 +6695,10 @@ int serverCommunicateSystemd(const char *sd_notify_msg) {
 
 /* Attempt to set up upstart supervision. Returns 1 if successful. */
 static int serverSupervisedUpstart(void) {
+#ifdef _WIN32
+    serverLog(LL_WARNING, "WIN32: upstart supervision requested, but not supported in windows mode");
+    return 0;
+#else
     const char *upstart_job = getenv("UPSTART_JOB");
 
     if (!upstart_job) {
@@ -6592,6 +6710,7 @@ static int serverSupervisedUpstart(void) {
     raise(SIGSTOP);
     unsetenv("UPSTART_JOB");
     return 1;
+#endif
 }
 
 /* Attempt to set up systemd supervision. Returns 1 if successful. */
@@ -6729,7 +6848,9 @@ int main(int argc, char **argv) {
      * be the same. But value of tv_usec is fast enough to make the difference */
     gettimeofday(&tv, NULL);
     srand(time(NULL) ^ getpid() ^ tv.tv_usec);
+#ifndef WIN32
     srandom(time(NULL) ^ getpid() ^ tv.tv_usec);
+#endif
     init_genrand64(((long long)tv.tv_sec * 1000000 + tv.tv_usec) ^ getpid());
     crc64_init();
 

@@ -37,8 +37,10 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/time.h>
+#ifndef _WIN32
 #include <sys/resource.h>
 #include <sys/wait.h>
+#endif
 #include <sys/param.h>
 
 off_t getAppendOnlyFileSize(sds filename, int *status);
@@ -48,7 +50,11 @@ int aofFileExist(char *filename);
 int rewriteAppendOnlyFile(char *filename);
 aofManifest *aofLoadManifestFromFile(sds am_filepath);
 void aofManifestFreeAndUpdate(aofManifest *am);
+#ifdef _WIN32
+void aof_background_fsync_and_close(HANDLE fd);
+#else
 void aof_background_fsync_and_close(int fd);
+#endif
 
 /* ----------------------------------------------------------------------------
  * AOF Manifest file implementation.
@@ -521,7 +527,11 @@ void markRewrittenIncrAofAsHistory(aofManifest *am) {
 /* Write the formatted manifest string to disk. */
 int writeAofManifestFile(sds buf) {
     int ret = C_OK;
+#ifdef _WIN32
+    DWORD nwritten;
+#else
     ssize_t nwritten;
+#endif
     int len;
 
     sds am_name = getAofManifestFileName();
@@ -529,6 +539,23 @@ int writeAofManifestFile(sds buf) {
     sds tmp_am_name = getTempAofManifestFileName();
     sds tmp_am_filepath = makePath(server.aof_dirname, tmp_am_name);
 
+#ifdef _WIN32
+    HANDLE fd = CreateFile(
+        tmp_am_filepath,               // File name
+        GENERIC_WRITE,          // Desired access
+        0,                      // Share mode
+        NULL,                   // Security attributes
+        CREATE_ALWAYS,          // Creation disposition
+        FILE_ATTRIBUTE_NORMAL,  // Flags and attributes
+        NULL                    // Template file
+    );
+
+    if (fd == INVALID_HANDLE_VALUE) {
+        DWORD error = GetLastError();
+        serverLog(LL_WARNING, "Can't open the AOF manifest file %s: %lu\n", tmp_am_name, error);
+        return -1;
+    }
+#else
     int fd = open(tmp_am_filepath, O_WRONLY | O_TRUNC | O_CREAT, 0644);
     if (fd == -1) {
         serverLog(LL_WARNING, "Can't open the AOF manifest file %s: %s", tmp_am_name, strerror(errno));
@@ -536,9 +563,26 @@ int writeAofManifestFile(sds buf) {
         ret = C_ERR;
         goto cleanup;
     }
+#endif
 
     len = sdslen(buf);
     while (len) {
+#ifdef _WIN32
+        BOOL result = WriteFile(
+        fd,                    // Handle to file
+        buf,                   // Buffer to write
+        len,                   // Number of bytes to write
+        &nwritten,             // Number of bytes written
+        NULL                   // Overlapped structure
+    );
+    if (!result) {
+      DWORD error = GetLastError();
+      serverLog(LL_WARNING, "Error trying to write the temporary AOF manifest file %s: %lu", tmp_am_name, error);
+      ret = C_ERR;
+      goto cleanup;
+    }
+
+#else
         nwritten = write(fd, buf, len);
 
         if (nwritten < 0) {
@@ -550,17 +594,20 @@ int writeAofManifestFile(sds buf) {
             ret = C_ERR;
             goto cleanup;
         }
+#endif
 
         len -= nwritten;
         buf += nwritten;
     }
 
+#ifndef _WIN32
     if (valkey_fsync(fd) == -1) {
         serverLog(LL_WARNING, "Fail to fsync the temp AOF file %s: %s.", tmp_am_name, strerror(errno));
 
         ret = C_ERR;
         goto cleanup;
     }
+#endif
 
     if (rename(tmp_am_filepath, am_filepath) != 0) {
         serverLog(LL_WARNING, "Error trying to rename the temporary AOF manifest file %s into %s: %s", tmp_am_name,
@@ -570,6 +617,7 @@ int writeAofManifestFile(sds buf) {
         goto cleanup;
     }
 
+#ifndef _WIN32
     /* Also sync the AOF directory as new AOF files may be added in the directory */
     if (fsyncFileDir(am_filepath) == -1) {
         serverLog(LL_WARNING, "Fail to fsync AOF directory %s: %s.", am_filepath, strerror(errno));
@@ -577,9 +625,13 @@ int writeAofManifestFile(sds buf) {
         ret = C_ERR;
         goto cleanup;
     }
+#endif
 
 cleanup:
-    if (fd != -1) close(fd);
+#ifdef _WIN32
+#else
+    if (fd != NULL) CloseHandle(fd);
+#endif
     sdsfree(am_name);
     sdsfree(am_filepath);
     sdsfree(tmp_am_name);
@@ -727,12 +779,28 @@ void aofOpenIfNeededOnServerStart(void) {
 
     /* Here we should use 'O_APPEND' flag. */
     sds aof_filepath = makePath(server.aof_dirname, aof_name);
+#ifdef _WIN32
+    server.aof_fd = CreateFile(
+        aof_filepath,
+        FILE_APPEND_DATA | GENERIC_WRITE,
+        0,
+        NULL,
+        OPEN_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL,
+        NULL
+    );
+    if (server.aof_fd == INVALID_HANDLE_VALUE) {
+        serverLog(LL_WARNING, "Can't open the append-only file %s: %lu", aof_name, GetLastError());
+        exit(1);
+    }
+#else
     server.aof_fd = open(aof_filepath, O_WRONLY | O_APPEND | O_CREAT, 0644);
     sdsfree(aof_filepath);
     if (server.aof_fd == -1) {
         serverLog(LL_WARNING, "Can't open the append-only file %s: %s", aof_name, strerror(errno));
         exit(1);
     }
+#endif
 
     /* Persist our changes. */
     int ret = persistAofManifest(server.aof_manifest);
@@ -772,7 +840,11 @@ int aofFileExist(char *filename) {
  * */
 int openNewIncrAofForAppend(void) {
     serverAssert(server.aof_manifest != NULL);
+#ifdef _WIN32
+    HANDLE newfd = NULL;
+#else
     int newfd = -1;
+#endif
     aofManifest *temp_am = NULL;
     sds new_aof_name = NULL;
 
@@ -789,12 +861,28 @@ int openNewIncrAofForAppend(void) {
         new_aof_name = sdsdup(getNewIncrAofName(temp_am));
     }
     sds new_aof_filepath = makePath(server.aof_dirname, new_aof_name);
+#ifdef _WIN32
+    newfd = CreateFile(
+        new_aof_filepath,
+        GENERIC_WRITE,
+        0,
+        NULL,
+        CREATE_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL,
+        NULL
+    );
+    if (newfd == INVALID_HANDLE_VALUE) {
+        serverLog(LL_WARNING, "Can't open the append-only file %s: %lu", new_aof_name, GetLastError());
+        goto cleanup;
+    }
+#else
     newfd = open(new_aof_filepath, O_WRONLY | O_TRUNC | O_CREAT, 0644);
     sdsfree(new_aof_filepath);
     if (newfd == -1) {
         serverLog(LL_WARNING, "Can't open the append-only file %s: %s", new_aof_name, strerror(errno));
         goto cleanup;
     }
+#endif
 
     if (temp_am) {
         /* Persist AOF Manifest. */
@@ -828,7 +916,11 @@ int openNewIncrAofForAppend(void) {
 
 cleanup:
     if (new_aof_name) sdsfree(new_aof_name);
+#ifdef _WIN32
+    if (newfd != NULL) CloseHandle(newfd);
+#else
     if (newfd != -1) close(newfd);
+#endif
     if (temp_am) aofManifestFree(temp_am);
     return C_ERR;
 }
@@ -903,12 +995,16 @@ int aofFsyncInProgress(void) {
 
 /* Starts a background task that performs fsync() against the specified
  * file descriptor (the one of the AOF file) in another thread. */
+#ifdef _WIN32
+void aof_background_fsync(HANDLE fd) {
+#else
 void aof_background_fsync(int fd) {
+#endif
     bioCreateFsyncJob(fd, server.primary_repl_offset, 1);
 }
 
 /* Close the fd on the basis of aof_background_fsync. */
-void aof_background_fsync_and_close(int fd) {
+void aof_background_fsync_and_close(HANDLE fd) {
     bioCreateCloseAofJob(fd, server.primary_repl_offset, 1);
 }
 
@@ -917,6 +1013,10 @@ void killAppendOnlyChild(void) {
     int statloc;
     /* No AOFRW child? return. */
     if (server.child_type != CHILD_TYPE_AOF) return;
+#ifdef _WIN32
+    serverLog(LL_NOTICE, "WIN32: Was going to kill AOF rewrite child, but the command is not implemented.");
+    return;
+#else
     /* Kill AOFRW child, wait for child exit. */
     serverLog(LL_NOTICE, "Killing running AOF rewrite child: %ld", (long)server.child_pid);
     if (kill(server.child_pid, SIGUSR1) != -1) {
@@ -925,6 +1025,7 @@ void killAppendOnlyChild(void) {
     aofRemoveTempFile(server.child_pid);
     resetChildState();
     server.aof_rewrite_time_start = -1;
+#endif
 }
 
 /* Called when the user switches from "appendonly yes" to "appendonly no"
@@ -938,10 +1039,18 @@ void stopAppendOnly(void) {
         } else {
             server.aof_last_fsync = server.mstime;
         }
+#ifdef _WIN32
+        CloseHandle(server.aof_fd);
+#else
         close(server.aof_fd);
+#endif
     }
 
+#ifdef _WIN32
+    server.aof_fd = NULL;
+#else
     server.aof_fd = -1;
+#endif
     server.aof_selected_db = -1;
     server.aof_state = AOF_OFF;
     if (server.aof_rewrite_scheduled) {
@@ -1011,6 +1120,30 @@ int startAppendOnly(void) {
  * is likely to fail. However apparently in modern systems this is no longer
  * true, and in general it looks just more resilient to retry the write. If
  * there is an actual error condition we'll get it at the next try. */
+#ifdef _WIN32
+ssize_t aofWrite(HANDLE fd, const char *buf, size_t len) {
+    DWORD nwritten = 0, totwritten = 0;
+
+    while (len) {
+        BOOL result = WriteFile(
+            fd,                // Handle to file
+            buf,                  // Buffer to write
+            len,               // Number of bytes to write
+            &nwritten,         // Number of bytes written
+            NULL                  // Overlapped structure
+        );
+        if (!result) {
+            return totwritten ? totwritten : -1;
+        }
+
+        len -= nwritten;
+        buf += nwritten;
+        totwritten += nwritten;
+    }
+
+    return totwritten;
+}
+#else
 ssize_t aofWrite(int fd, const char *buf, size_t len) {
     ssize_t nwritten = 0, totwritten = 0;
 
@@ -1029,6 +1162,7 @@ ssize_t aofWrite(int fd, const char *buf, size_t len) {
 
     return totwritten;
 }
+#endif
 
 /* Write the append only file buffer on disk.
  *
@@ -1163,6 +1297,24 @@ void flushAppendOnlyFile(int force) {
                           (long long)nwritten, (long long)sdslen(server.aof_buf));
             }
 
+#ifdef _WIN32
+            LARGE_INTEGER li;
+            li.QuadPart = server.aof_last_incr_size;
+            if (!SetFilePointerEx(server.aof_fd, li, NULL, FILE_BEGIN)) {
+                if (can_log) {
+                    serverLog(LL_WARNING,
+                              "WIN32: Could not remove short write "
+                              "from the append-only file. The server may refuse "
+                              "to load the AOF the next time it starts.  "
+                              "SetFilePointerEx: %lu",
+                              GetLastError());
+                }
+            } else {
+                SetEndOfFile(server.aof_fd);
+
+                nwritten = -1;
+            }
+#else
             if (ftruncate(server.aof_fd, server.aof_last_incr_size) == -1) {
                 if (can_log) {
                     serverLog(LL_WARNING,
@@ -1177,6 +1329,7 @@ void flushAppendOnlyFile(int force) {
                  * -1 since there is no longer partial data into the AOF. */
                 nwritten = -1;
             }
+#endif
             server.aof_last_write_errno = ENOSPC;
         }
 
@@ -1600,7 +1753,13 @@ uxeof: /* Unexpected AOF end of file. */
         } else {
             /* Make sure the AOF file descriptor points to the end of the
              * file after the truncate call. */
+#ifdef _WIN32
+            LARGE_INTEGER li;
+            li.QuadPart = 0;
+            if (server.aof_fd != NULL && !SetFilePointerEx(server.aof_fd, li, NULL, FILE_END)) {
+#else
             if (server.aof_fd != -1 && lseek(server.aof_fd, 0, SEEK_END) == -1) {
+#endif
                 serverLog(LL_WARNING, "Can't seek the end of the AOF file %s: %s", filename, strerror(errno));
             } else {
                 serverLog(LL_WARNING, "AOF %s loaded anyway because aof-load-truncated is enabled", filename);
@@ -2333,8 +2492,12 @@ int rewriteAppendOnlyFile(char *filename) {
 
     /* Make sure data will not remain on the OS's output buffers */
     if (fflush(fp)) goto werr;
+#ifndef _WIN32
     if (fsync(fileno(fp))) goto werr;
     if (reclaimFilePageCache(fileno(fp), 0, 0) == -1) {
+#else
+    if (reclaimFilePageCache(fp, 0, 0) == -1) {
+#endif
         /* A minor error. Just log to know what happens */
         serverLog(LL_NOTICE, "Unable to reclaim page cache: %s", strerror(errno));
     }
@@ -2664,10 +2827,12 @@ void backgroundRewriteDoneHandler(int exitcode, int bysignal) {
     } else {
         /* SIGUSR1 is whitelisted, so we have a way to kill a child without
          * triggering an error condition. */
+#ifndef _WIN32
         if (bysignal != SIGUSR1) {
             server.aof_lastbgrewrite_status = C_ERR;
             server.stat_aofrw_consecutive_failures++;
         }
+#endif
 
         serverLog(LL_WARNING, "Background AOF rewrite terminated by signal %d", bysignal);
     }

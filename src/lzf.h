@@ -37,6 +37,10 @@
 #ifndef LZF_H
 #define LZF_H
 
+#ifdef _WIN32
+#define _int64 long long
+#endif
+
 /***********************************************************************
 **
 **	lzf -- an extremely fast/free compression/decompression-method

@@ -872,6 +872,10 @@ void ldbSendLogs(void) {
  * The caller should call ldbEndSession() only if ldbStartSession()
  * returned 1. */
 int ldbStartSession(client *c) {
+#ifdef __WIN32
+    addReplyErrorFormat(c, "WIN32: Debug mode not implemented.");
+    return 0;
+#else
     ldb.forked = !c->flag.lua_debug_sync;
     if (ldb.forked) {
         pid_t cp = serverFork(CHILD_TYPE_LDB);
@@ -917,6 +921,7 @@ int ldbStartSession(client *c) {
     ldb.src = sdssplitlen(srcstring, sdslen(srcstring), "\n", 1, &ldb.lines);
     sdsfree(srcstring);
     return 1;
+#endif
 }
 
 /* End a debugging session after the EVAL call with debugging enabled
@@ -976,7 +981,9 @@ void ldbKillForkedSessions(void) {
     while ((ln = listNext(&li))) {
         pid_t pid = (unsigned long)ln->value;
         serverLog(LL_NOTICE, "Killing debugging session %ld", (long)pid);
+#ifndef _WIN32
         kill(pid, SIGKILL);
+#endif
     }
     listRelease(ldb.children);
     ldb.children = listCreate();

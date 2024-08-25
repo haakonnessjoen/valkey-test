@@ -27,6 +27,11 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef _WIN32
+#define WORD MAJvoid
+#include <windows.h>
+#undef WORD
+#endif
 #include "server.h"
 #include "sha256.h"
 #include <fcntl.h>
@@ -2503,10 +2508,12 @@ int ACLSaveToFile(const char *filename) {
         }
         offset += written_bytes;
     }
+#ifndef _WIN32
     if (valkey_fsync(fd) == -1) {
         serverLog(LL_WARNING, "Syncing ACL file for ACL SAVE: %s", strerror(errno));
         goto cleanup;
     }
+#endif
     close(fd);
     fd = -1;
 
@@ -2515,10 +2522,12 @@ int ACLSaveToFile(const char *filename) {
         serverLog(LL_WARNING, "Renaming ACL file for ACL SAVE: %s", strerror(errno));
         goto cleanup;
     }
+#ifndef _WIN32
     if (fsyncFileDir(filename) == -1) {
         serverLog(LL_WARNING, "Syncing ACL directory for ACL SAVE: %s", strerror(errno));
         goto cleanup;
     }
+#endif
     sdsfree(tmpfilename);
     tmpfilename = NULL;
     retval = C_OK; /* If we reached this point, everything is fine. */

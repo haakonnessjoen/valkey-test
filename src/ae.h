@@ -35,6 +35,14 @@
 
 #include "monotonic.h"
 #include <pthread.h>
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <windows.h>
+#include <io.h>
+#else
+#include <poll.h>
+#endif
 
 #define AE_OK 0
 #define AE_ERR -1
@@ -116,6 +124,9 @@ typedef struct aeEventLoop {
     aeCustomPollProc *custompoll;
     pthread_mutex_t poll_mutex;
     int flags;
+#ifdef _WIN32
+    WSADATA wsaData;
+#endif
 } aeEventLoop;
 
 /* Prototypes */

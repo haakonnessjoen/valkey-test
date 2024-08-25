@@ -9,7 +9,7 @@ DEBUG= -g
 R_CC=$(CC) $(R_CFLAGS)
 R_LD=$(CC) $(R_LDFLAGS)
 
-AR= ar
+#AR= ar
 ARFLAGS= rcs
 
 libfpconv.a: fpconv_dtoa.o

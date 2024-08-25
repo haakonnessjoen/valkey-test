@@ -33,7 +33,9 @@ INSTALL_DATA= $(INSTALL) -m 0644
 
 # Utilities.
 MKDIR= mkdir -p
-RANLIB= ranlib
+#RANLIB= ranlib
+AR=/opt/homebrew/bin/x86_64-w64-mingw32-ar
+RANLIB=/opt/homebrew/bin/x86_64-w64-mingw32-ranlib
 
 # == END OF USER SETTINGS. NO NEED TO CHANGE ANYTHING BELOW THIS LINE =========
 

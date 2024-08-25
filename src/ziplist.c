@@ -184,6 +184,9 @@
 #include <string.h>
 #include <stdint.h>
 #include <limits.h>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 #include "zmalloc.h"
 #include "util.h"
 #include "ziplist.h"

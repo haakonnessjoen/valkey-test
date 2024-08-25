@@ -41,8 +41,10 @@
 
 #include <stdlib.h>
 #include <sys/types.h>
+#ifndef _WIN32
 #include <sys/socket.h>
 #include <arpa/inet.h>
+#endif
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
@@ -836,10 +838,12 @@ int clusterSaveConfig(int do_fsync) {
 
     if (do_fsync) {
         server.cluster->todo_before_sleep &= ~CLUSTER_TODO_FSYNC_CONFIG;
+#ifndef _WIN32
         if (valkey_fsync(fd) == -1) {
             serverLog(LL_WARNING, "Could not sync tmp cluster config file: %s", strerror(errno));
             goto cleanup;
         }
+#endif
     }
 
     if (rename(tmpfilename, server.cluster_configfile) == -1) {
@@ -848,10 +852,12 @@ int clusterSaveConfig(int do_fsync) {
     }
 
     if (do_fsync) {
+#ifndef _WIN32
         if (fsyncFileDir(server.cluster_configfile) == -1) {
             serverLog(LL_WARNING, "Could not sync cluster config file dir: %s", strerror(errno));
             goto cleanup;
         }
+#endif
     }
     retval = C_OK; /* If we reached this point, everything is fine. */
 
@@ -880,6 +886,10 @@ void clusterSaveConfigOrDie(int do_fsync) {
  * On success C_OK is returned, otherwise an error is logged and
  * the function returns C_ERR to signal a lock was not acquired. */
 int clusterLockConfig(char *filename) {
+#ifdef _WIN32
+    serverLog(LL_WARNING, "WIN32: Sorry, the legacy cluster functions are not implemented in this version");
+    return C_ERR;
+#else
 /* flock() does not exist on Solaris
  * and a fcntl-based solution won't help, as we constantly re-open that file,
  * which will release _all_ locks anyway
@@ -923,6 +933,7 @@ int clusterLockConfig(char *filename) {
 #endif /* __sun */
 
     return C_OK;
+#endif
 }
 
 /* Derives our ports to be announced in the cluster bus. */
@@ -1110,7 +1121,11 @@ void clusterInit(void) {
 
     /* Lock the cluster config file to make sure every node uses
      * its own nodes.conf. */
+#ifdef _WIN32
+    server.cluster_config_file_lock_fd = NULL;
+#else
     server.cluster_config_file_lock_fd = -1;
+#endif
     if (clusterLockConfig(server.cluster_configfile) == C_ERR) exit(1);
 
     /* Load or create a new nodes configuration. */

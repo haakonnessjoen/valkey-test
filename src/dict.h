@@ -173,6 +173,13 @@ typedef struct {
 #define dictPauseAutoResize(d) ((d)->pauseAutoResize++)
 #define dictResumeAutoResize(d) ((d)->pauseAutoResize--)
 
+#ifdef _WIN32
+static uint64_t random(void) {
+    uint64_t high = ((uint64_t)rand() << 32) | rand();
+    return high;
+}
+#endif
+
 /* If our unsigned long type can store a 64 bit number, use a 64 bit PRNG. */
 #if ULONG_MAX >= 0xffffffffffffffff
 #define randomULong() ((unsigned long)genrand64_int64())

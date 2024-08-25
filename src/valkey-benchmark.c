@@ -1430,8 +1430,10 @@ int parseOptions(int argc, char **argv) {
         } else if (!strcmp(argv[i], "--seed")) {
             if (lastarg) goto invalid;
             int rand_seed = atoi(argv[++i]);
+#ifndef _WIN32
             srandom(rand_seed);
             init_genrand64(rand_seed);
+#endif
         } else if (!strcmp(argv[i], "-t")) {
             if (lastarg) goto invalid;
             /* We get the list of tests to run as a string in the form

@@ -30,6 +30,13 @@
 
 #include "fmacros.h"
 
+#ifdef _WIN32
+#include <io.h>
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <windows.h>
+#pragma comment(lib, "Ws2_32.lib")
+#else
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -40,12 +47,14 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <fcntl.h>
-#include <string.h>
 #include <netdb.h>
+#include <grp.h>
+#endif
+#include <stdint.h>
+#include <string.h>
 #include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
-#include <grp.h>
 
 #include "anet.h"
 #include "config.h"
@@ -62,6 +71,19 @@ static void anetSetError(char *err, const char *fmt, ...) {
     va_end(ap);
 }
 
+#ifdef _WIN32
+int anetGetError(int fd) {
+    int sockerr = 0;
+    int errlen = sizeof(sockerr);
+
+    // Get the socket error if the socket is valid
+    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, (char*)&sockerr, &errlen) == SOCKET_ERROR) {
+        // If getsockopt fails, retrieve the last socket error
+        sockerr = WSAGetLastError();
+    }
+    return sockerr;
+}
+#else
 int anetGetError(int fd) {
     int sockerr = 0;
     socklen_t errlen = sizeof(sockerr);
@@ -69,7 +91,18 @@ int anetGetError(int fd) {
     if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &sockerr, &errlen) == -1) sockerr = errno;
     return sockerr;
 }
+#endif
 
+#ifdef _WIN32
+int anetSetBlock(char *err, int fd, int non_block) {
+    u_long mode = non_block ? 1 : 0;
+    if (ioctlsocket(fd, FIONBIO, &mode) == SOCKET_ERROR) {
+        anetSetError(err, "ioctlsocket(FIONBIO): %d", WSAGetLastError());
+        return ANET_ERR;
+    }
+    return ANET_OK;
+}
+#else
 int anetSetBlock(char *err, int fd, int non_block) {
     int flags;
 
@@ -96,6 +129,7 @@ int anetSetBlock(char *err, int fd, int non_block) {
     }
     return ANET_OK;
 }
+#endif
 
 int anetNonBlock(char *err, int fd) {
     return anetSetBlock(err, fd, 1);
@@ -109,6 +143,17 @@ int anetBlock(char *err, int fd) {
  * This function should be invoked for fd's on specific places
  * where fork + execve system calls are called. */
 int anetCloexec(int fd) {
+#ifdef _WIN32
+    HANDLE handle = (HANDLE)_get_osfhandle(fd);
+    if (handle == INVALID_HANDLE_VALUE) {
+        return -1; // Invalid handle
+    }
+    
+    // Set the handle to close automatically on exec
+    if (!SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0)) {
+        return -1; // Failed to set handle information
+    }
+#else
     int r;
     int flags;
 
@@ -125,11 +170,24 @@ int anetCloexec(int fd) {
     } while (r == -1 && errno == EINTR);
 
     return r;
+#endif
 }
 
 /* Enable TCP keep-alive mechanism to detect dead peers,
  * TCP_KEEPIDLE, TCP_KEEPINTVL and TCP_KEEPCNT will be set accordingly. */
 int anetKeepAlive(char *err, int fd, int interval) {
+#ifdef _WIN32
+    // Windows doesn't support TCP_KEEPIDLE, TCP_KEEPINTVL, TCP_KEEPCNT
+    // Use TCP_KEEPALIVE which is supported in Windows
+
+    // Windows requires the keepalive timeout to be set in milliseconds
+    int keepalive_time = interval * 1000; // Convert seconds to milliseconds
+    if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPALIVE, (const char*)&keepalive_time, sizeof(keepalive_time)) != 0) {
+        anetSetError(err, "setsockopt TCP_KEEPALIVE: %d", WSAGetLastError());
+        return ANET_ERR;
+    }
+
+#else
     int enabled = 1;
     if (setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &enabled, sizeof(enabled))) {
         anetSetError(err, "setsockopt SO_KEEPALIVE: %s", strerror(errno));
@@ -266,14 +324,25 @@ int anetKeepAlive(char *err, int fd, int interval) {
     }
 #endif
 
+#endif // _WIN32
     return ANET_OK;
 }
 
 static int anetSetTcpNoDelay(char *err, int fd, int val) {
+#ifdef _WIN32
+    // On Windows, use the Winsock API and handle errors with WSAGetLastError
+    if (setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, (const char*)&val, sizeof(val)) != 0) {
+        anetSetError(err, "setsockopt TCP_NODELAY: %d", WSAGetLastError());
+        return ANET_ERR;
+    }
+#else
+    // On Unix-like systems, use the standard POSIX API and handle errors with strerror
     if (setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &val, sizeof(val)) == -1) {
         anetSetError(err, "setsockopt TCP_NODELAY: %s", strerror(errno));
         return ANET_ERR;
     }
+#endif
+
     return ANET_OK;
 }
 
@@ -288,6 +357,14 @@ int anetDisableTcpNoDelay(char *err, int fd) {
 /* Set the socket send timeout (SO_SNDTIMEO socket option) to the specified
  * number of milliseconds, or disable it if the 'ms' argument is zero. */
 int anetSendTimeout(char *err, int fd, long long ms) {
+#ifdef _WIN32
+    // On Windows, use SO_SNDTIMEO to set the send timeout
+    DWORD timeout = (DWORD)ms;
+    if (setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, (const char*)&timeout, sizeof(timeout)) == SOCKET_ERROR) {
+        anetSetError(err, "setsockopt SO_SNDTIMEO: %d", WSAGetLastError());
+        return ANET_ERR;
+    }
+#else
     struct timeval tv;
 
     tv.tv_sec = ms / 1000;
@@ -296,12 +373,21 @@ int anetSendTimeout(char *err, int fd, long long ms) {
         anetSetError(err, "setsockopt SO_SNDTIMEO: %s", strerror(errno));
         return ANET_ERR;
     }
+#endif
     return ANET_OK;
 }
 
 /* Set the socket receive timeout (SO_RCVTIMEO socket option) to the specified
  * number of milliseconds, or disable it if the 'ms' argument is zero. */
 int anetRecvTimeout(char *err, int fd, long long ms) {
+#ifdef _WIN32
+    // On Windows, use SO_SNDTIMEO to set the send timeout
+    DWORD timeout = (DWORD)ms;
+    if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout)) == SOCKET_ERROR) {
+        anetSetError(err, "setsockopt SO_RCVTIMEO: %d", WSAGetLastError());
+        return ANET_ERR;
+    }
+#else
     struct timeval tv;
 
     tv.tv_sec = ms / 1000;
@@ -311,6 +397,7 @@ int anetRecvTimeout(char *err, int fd, long long ms) {
         return ANET_ERR;
     }
     return ANET_OK;
+#endif
 }
 
 /* Resolve the hostname "host" and set the string representation of the
@@ -324,8 +411,18 @@ int anetRecvTimeout(char *err, int fd, long long ms) {
  * If the flag ANET_PREFER_IPV6 is set, IPv6 is preferred over IPv4.
  * */
 int anetResolve(char *err, char *host, char *ipbuf, size_t ipbuf_len, int flags) {
-    struct addrinfo hints, *info;
+    struct addrinfo hints, *info = NULL;
+    struct addrinfo *res = NULL;
     int rv;
+
+#ifdef _WIN32
+    // Initialize Winsock
+    WSADATA wsaData;
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+        anetSetError(err, "WSAStartup failed");
+        return ANET_ERR;
+    }
+#endif
 
     memset(&hints, 0, sizeof(hints));
     if (flags & ANET_IP_ONLY) hints.ai_flags = AI_NUMERICHOST;
@@ -335,38 +432,73 @@ int anetResolve(char *err, char *host, char *ipbuf, size_t ipbuf_len, int flags)
     } else if (flags & ANET_PREFER_IPV6 && !(flags & ANET_PREFER_IPV4)) {
         hints.ai_family = AF_INET6;
     }
-    hints.ai_socktype = SOCK_STREAM; /* specify socktype to avoid dups */
+    hints.ai_socktype = SOCK_STREAM;
 
     rv = getaddrinfo(host, NULL, &hints, &info);
     if (rv != 0 && hints.ai_family != AF_UNSPEC) {
-        /* Try the other IP version. */
+        // Try the other IP version
         hints.ai_family = (hints.ai_family == AF_INET) ? AF_INET6 : AF_INET;
         rv = getaddrinfo(host, NULL, &hints, &info);
     }
+
     if (rv != 0) {
         anetSetError(err, "%s", gai_strerror(rv));
+#ifdef _WIN32
+        WSACleanup();
+#endif
         return ANET_ERR;
     }
-    if (info->ai_family == AF_INET) {
-        struct sockaddr_in *sa = (struct sockaddr_in *)info->ai_addr;
-        inet_ntop(AF_INET, &(sa->sin_addr), ipbuf, ipbuf_len);
+
+    if (info) {
+        if (info->ai_family == AF_INET) {
+            struct sockaddr_in *sa = (struct sockaddr_in *)info->ai_addr;
+            inet_ntop(AF_INET, &(sa->sin_addr), ipbuf, ipbuf_len);
+        } else if (info->ai_family == AF_INET6) {
+            struct sockaddr_in6 *sa = (struct sockaddr_in6 *)info->ai_addr;
+            inet_ntop(AF_INET6, &(sa->sin6_addr), ipbuf, ipbuf_len);
+        } else {
+            anetSetError(err, "Unknown address family");
+            freeaddrinfo(info);
+#ifdef _WIN32
+            WSACleanup();
+#endif
+            return ANET_ERR;
+        }
+
+        freeaddrinfo(info);
     } else {
-        struct sockaddr_in6 *sa = (struct sockaddr_in6 *)info->ai_addr;
-        inet_ntop(AF_INET6, &(sa->sin6_addr), ipbuf, ipbuf_len);
+        anetSetError(err, "No address information available");
+#ifdef _WIN32
+        WSACleanup();
+#endif
+        return ANET_ERR;
     }
 
-    freeaddrinfo(info);
+#ifdef _WIN32
+    WSACleanup();
+#endif
+
     return ANET_OK;
 }
 
 static int anetSetReuseAddr(char *err, int fd) {
     int yes = 1;
+
+#ifdef _WIN32
+    // On Windows, SO_REUSEADDR is used similarly, but errors are handled differently
+    if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (const char*)&yes, sizeof(yes)) == SOCKET_ERROR) {
+        anetSetError(err, "setsockopt SO_REUSEADDR: %d", WSAGetLastError());
+        return ANET_ERR;
+    }
+#else
     /* Make sure connection-intensive things like the benchmark tool
      * will be able to close/open sockets a zillion of times */
     if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)) == -1) {
         anetSetError(err, "setsockopt SO_REUSEADDR: %s", strerror(errno));
         return ANET_ERR;
     }
+#endif
+
     return ANET_OK;
 }
 
@@ -381,6 +513,10 @@ static int anetSetReuseAddr(char *err, int fd) {
 static int anetCreateSocket(char *err, int domain, int type, int protocol, int flags) {
     int s;
 
+#ifdef _WIN32
+    // Windows does not support SOCK_CLOEXEC and SOCK_NONBLOCK flags directly
+    // Handle flags accordingly
+#else
 #ifdef SOCK_CLOEXEC
     if (flags & ANET_SOCKET_CLOEXEC) {
         type |= SOCK_CLOEXEC;
@@ -394,16 +530,21 @@ static int anetCreateSocket(char *err, int domain, int type, int protocol, int f
         flags &= ~ANET_SOCKET_NONBLOCK;
     }
 #endif
+#endif
 
     if ((s = socket(domain, type, protocol)) == -1) {
         anetSetError(err, "creating socket: %s", strerror(errno));
         return ANET_ERR;
     }
 
+#ifdef _WIN32
+    // Windows does not support SO_CLOEXEC, handle other flags
+#else
     if (flags & ANET_SOCKET_CLOEXEC && anetCloexec(s) == ANET_ERR) {
         close(s);
         return ANET_ERR;
     }
+#endif
 
     if (flags & ANET_SOCKET_NONBLOCK && anetNonBlock(err, s) == ANET_ERR) {
         close(s);
@@ -465,10 +606,18 @@ static int anetTcpGenericConnect(char *err, const char *addr, int port, const ch
                 goto error;
             }
         }
+
         if (connect(s, p->ai_addr, p->ai_addrlen) == -1) {
+#ifdef _WIN32
+            // On Windows, `connect` can return WSAEWOULDBLOCK for non-blocking sockets
+            if (WSAGetLastError() == WSAEWOULDBLOCK && (flags & ANET_CONNECT_NONBLOCK)) {
+                goto end;
+            }
+#else
             /* If the socket is non-blocking, it is ok for connect() to
              * return an EINPROGRESS error here. */
             if (errno == EINPROGRESS && flags & ANET_CONNECT_NONBLOCK) goto end;
+#endif
             close(s);
             s = ANET_ERR;
             continue;
@@ -507,6 +656,21 @@ int anetTcpNonBlockBestEffortBindConnect(char *err, const char *addr, int port, 
 }
 
 static int anetListen(char *err, int s, struct sockaddr *sa, socklen_t len, int backlog, mode_t perm, char *group) {
+#ifdef _WIN32
+    // On Windows, no support for UNIX domain sockets or permission handling.
+    // Simply bind and listen.
+    if (bind(s, sa, len) == SOCKET_ERROR) {
+        anetSetError(err, "bind: %d", WSAGetLastError());
+        closesocket(s);
+        return ANET_ERR;
+    }
+
+    if (listen(s, backlog) == SOCKET_ERROR) {
+        anetSetError(err, "listen: %d", WSAGetLastError());
+        closesocket(s);
+        return ANET_ERR;
+    }
+#else
     if (bind(s, sa, len) == -1) {
         anetSetError(err, "bind: %s", strerror(errno));
         close(s);
@@ -536,15 +700,24 @@ static int anetListen(char *err, int s, struct sockaddr *sa, socklen_t len, int 
         close(s);
         return ANET_ERR;
     }
+#endif
     return ANET_OK;
 }
 
 static int anetV6Only(char *err, int s) {
+#ifdef _WIN32
+    BOOL yes = TRUE;
+    if (setsockopt(s, IPPROTO_IPV6, IPV6_V6ONLY, (const char*)&yes, sizeof(yes)) == SOCKET_ERROR) {
+        anetSetError(err, "setsockopt: %d", WSAGetLastError());
+        return ANET_ERR;
+    }
+#else
     int yes = 1;
     if (setsockopt(s, IPPROTO_IPV6, IPV6_V6ONLY, &yes, sizeof(yes)) == -1) {
         anetSetError(err, "setsockopt: %s", strerror(errno));
         return ANET_ERR;
     }
+#endif
     return ANET_OK;
 }
 
@@ -595,8 +768,13 @@ int anetTcp6Server(char *err, int port, char *bindaddr, int backlog) {
 }
 
 int anetUnixServer(char *err, char *path, mode_t perm, int backlog, char *group) {
+#ifdef _WIN32
+        anetSetError(err, "this platform does not support unix sockets");
+	return ANET_ERR;
+#else
     int s;
     struct sockaddr_un sa;
+
 
     if (strlen(path) > sizeof(sa.sun_path) - 1) {
         anetSetError(err, "unix socket path too long (%zu), must be under %zu", strlen(path), sizeof(sa.sun_path));
@@ -612,6 +790,7 @@ int anetUnixServer(char *err, char *path, mode_t perm, int backlog, char *group)
     valkey_strlcpy(sa.sun_path, path, sizeof(sa.sun_path));
     if (anetListen(err, s, (struct sockaddr *)&sa, sizeof(sa), backlog, perm, group) == ANET_ERR) return ANET_ERR;
     return s;
+#endif
 }
 
 /* Accept a connection and also make sure the socket is non-blocking, and CLOEXEC.
@@ -668,12 +847,16 @@ int anetTcpAccept(char *err, int serversock, char *ip, size_t ip_len, int *port)
 /* Accept a connection and also make sure the socket is non-blocking, and CLOEXEC.
  * returns the new socket FD, or -1 on error. */
 int anetUnixAccept(char *err, int s) {
+#ifdef _WIN32
+	return -1;
+#else
     int fd;
     struct sockaddr_un sa;
     socklen_t salen = sizeof(sa);
     if ((fd = anetGenericAccept(err, s, (struct sockaddr *)&sa, &salen)) == ANET_ERR) return ANET_ERR;
 
     return fd;
+#endif
 }
 
 int anetFdToString(int fd, char *ip, size_t ip_len, int *port, int remote) {
@@ -727,6 +910,10 @@ error:
  * and one of the use cases is O_CLOEXEC|O_NONBLOCK. */
 int anetPipe(int fds[2], int read_flags, int write_flags) {
     int pipe_flags = 0;
+
+#ifdef _WIN32
+	return -1;
+#else
 #ifdef HAVE_PIPE2
     /* When possible, try to leverage pipe2() to apply flags that are common to both ends.
      * There is no harm to set O_CLOEXEC to prevent fd leaks. */
@@ -769,6 +956,7 @@ error:
     close(fds[0]);
     close(fds[1]);
     return -1;
+#endif
 }
 
 int anetSetSockMarkId(char *err, int fd, uint32_t id) {
@@ -787,7 +975,25 @@ int anetSetSockMarkId(char *err, int fd, uint32_t id) {
 }
 
 int anetIsFifo(char *filepath) {
+#ifdef _WIN32
+    DWORD attributes = GetFileAttributes(filepath);
+    if (attributes == INVALID_FILE_ATTRIBUTES) {
+        return 0; // File does not exist or an error occurred
+    }
+
+    // Check if the file type is a named pipe
+    HANDLE file = CreateFile(filepath, GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file == INVALID_HANDLE_VALUE) {
+        return 0; // Could not open the file
+    }
+
+    DWORD fileType = GetFileType(file);
+    CloseHandle(file);
+
+    return (fileType == FILE_TYPE_PIPE);
+#else
     struct stat sb;
     if (stat(filepath, &sb) == -1) return 0;
     return S_ISFIFO(sb.st_mode);
+#endif
 }
